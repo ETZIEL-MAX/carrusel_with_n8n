@@ -125,7 +125,8 @@ export async function POST(request) {
     }
     console.error(`POST /api/upload error (${phase}):`, err);
     if (phase === 'upload') {
-      return errorResponse(`Error al guardar en Vercel Blob: ${err.name || 'error'}`, 500);
+      const detail = [err?.name, err?.message, err?.cause?.message].filter(Boolean).join(' | ');
+      return errorResponse(`Error al guardar en Vercel Blob: ${detail || 'error'}`, 500);
     }
     return errorResponse(`No se pudo descargar la imagen: ${err.message}`, 502);
   } finally {
