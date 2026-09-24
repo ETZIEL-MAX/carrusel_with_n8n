@@ -69,12 +69,14 @@ const imagesHandler = await import('../api/images.js');
 const authHandler = await import('../api/auth.js');
 const webhookHandler = await import('../api/webhook.js');
 const uploadHandler = await import('../api/upload.js');
+const healthHandler = await import('../api/health.js');
 
 const API_ROUTES = {
   '/api/images': imagesHandler,
   '/api/auth': authHandler,
   '/api/webhook': webhookHandler,
   '/api/upload': uploadHandler,
+  '/api/health': healthHandler,
 };
 
 const MIME = {

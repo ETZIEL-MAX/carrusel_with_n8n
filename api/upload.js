@@ -11,6 +11,7 @@ import {
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_WEBHOOK || '10', 10);
 const MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES || String(15 * 1024 * 1024), 10);
 const FETCH_TIMEOUT_MS = parseInt(process.env.UPLOAD_FETCH_TIMEOUT || '20000', 10);
+const BLOB_ACCESS = (process.env.BLOB_ACCESS || 'public').toLowerCase() === 'private' ? 'private' : 'public';
 
 const ALLOWED_HOSTS = (process.env.UPLOAD_ALLOWED_HOSTS || 'aliyuncs.com,cloudinary.com,pollinations.ai')
   .split(',')
@@ -110,7 +111,7 @@ export async function POST(request) {
 
     phase = 'upload';
     const blob = await put(pathname, buffer, {
-      access: 'public',
+      access: BLOB_ACCESS,
       contentType: contentType.split(';')[0].trim(),
       addRandomSuffix: false,
     });
