@@ -256,6 +256,41 @@ curl -X POST https://TU-APP.vercel.app/api/upload \
 
 ---
 
+## Health (diagnóstico)
+
+### `POST /api/health`
+
+Diagnóstico protegido por HMAC. Devuelve booleanos y los **nombres** de las
+variables relevantes (nunca sus valores).
+
+- **Auth**: header `X-Webhook-Secret` = HMAC-SHA256 (hex) del cuerpo crudo.
+
+```bash
+BODY='{}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+curl -X POST https://TU-APP.vercel.app/api/health \
+  -H "Content-Type: application/json" -H "X-Webhook-Secret: $SIG" -d "$BODY"
+```
+
+**Respuesta**
+
+```json
+{
+  "ok": true,
+  "node": "v20.x",
+  "redisConfigured": true,
+  "blobToken": true,
+  "blobAccess": "public",
+  "jwtSecret": true,
+  "webhookSecret": true,
+  "adminHash": true,
+  "uploadAllowedHosts": "aliyuncs.com,cloudinary.com,pollinations.ai",
+  "relevantEnvNames": ["ADMIN_PASSWORD_HASH", "BLOB_READ_WRITE_TOKEN", "KV_REST_API_URL"]
+}
+```
+
+---
+
 ## Autenticación
 
 ### `POST /api/auth`

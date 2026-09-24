@@ -97,34 +97,44 @@ pagina_con_endpoints/
 
 ---
 
-## Inicio rápido (local)
+## Inicio rápido (local, sin servicios externos)
 
-Requisitos: **Node.js 18+** y la CLI de Vercel.
+Requiere solo **Node.js 18+**. No necesita Redis ni Vercel Blob: usa archivos en `.data/`.
 
 ```bash
-# 1. Instalar dependencias
 npm install
-
-# 2. Copiar variables de entorno
-cp .env.example .env
-
-# 3. Generar el hash de la contraseña de admin
-npm run hash:password
-#   → copia el valor ADMIN_PASSWORD_HASH en .env
-
-# 4. Generar secretos
-#   Windows PowerShell:
-#   [Convert]::ToBase64String((1..32 | % { Get-Random -Max 256 }))
-#   Linux/macOS: openssl rand -base64 32
-
-# 5. Arrancar en local
-npm run dev        # ejecuta `vercel dev`
+npm run dev:local     # o: npm start
 ```
 
-Abre `http://localhost:3000` para el carrusel y `http://localhost:3000/admin` para el panel.
+Abre:
+- Carrusel: `http://localhost:3000/`
+- Panel admin: `http://localhost:3000/admin` → contraseña **`10Cuidado.2026`**
 
-> `vercel dev` necesita Redis configurado. Para desarrollo local puedes usar las
-> credenciales de tu base Upstash directamente en `.env`.
+Los datos (imágenes del carrusel e imágenes subidas) **persisten** en `.data/`.
+
+Prueba automática de todos los endpoints:
+
+```bash
+npm test
+```
+
+---
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+- Disponible en `http://localhost:8080`
+- Contraseña admin: `10Cuidado.2026`
+- Los datos persisten en `./.data` (volumen montado)
+
+Detener:
+
+```bash
+docker compose down
+```
 
 ---
 
@@ -140,7 +150,11 @@ Abre `http://localhost:3000` para el carrusel y `http://localhost:3000/admin` pa
 | `JWT_SECRET` | Sí | Secreto para firmar sesiones (mín. 32 caracteres aleatorios). |
 | `JWT_EXPIRY` | No | Caducidad de la sesión. Por defecto `1h`. |
 | `WEBHOOK_SECRET` | Sí | Secreto compartido con n8n para la firma HMAC. |
-| `BLOB_READ_WRITE_TOKEN` | Sí (para upload) | Token de Vercel Blob. Lo inyecta Vercel al crear un Blob store. |
+| `LOCAL_STORAGE` | No | `1` usa archivos locales (`.data/`) en vez de Redis/Blob. Lo activa el servidor local y Docker. |
+| `LOCAL_DATA_DIR` | No | Carpeta de datos en modo local. Por defecto `.data/`. |
+| `ADMIN_PASSWORD` | No | Solo local/Docker: el servidor hashea esta contraseña al arrancar. |
+| `BLOB_ACCESS` | No | `public` (por defecto) o `private` para Vercel Blob. |
+| `BLOB_READ_WRITE_TOKEN` | Sí (para upload en Vercel) | Token de Vercel Blob. Lo inyecta Vercel al crear un Blob store. |
 | `UPLOAD_ALLOWED_HOSTS` | No | Hosts permitidos como origen de imagen en `/api/upload`. Default `aliyuncs.com,cloudinary.com,pollinations.ai`. |
 | `UPLOAD_MAX_BYTES` | No | Tamaño máximo de imagen en `/api/upload`. Default 15 MB. |
 | `RATE_LIMIT_IMAGES` | No | Peticiones/min por IP en `/api/images`. Por defecto `60`. |
@@ -176,6 +190,7 @@ Resumen; detalle completo en [`docs/API.md`](docs/API.md).
 | `DELETE` | `/api/images?id=...` | Admin | Elimina una imagen. |
 | `POST` | `/api/webhook` | HMAC | Reemplaza todo el carrusel (n8n). |
 | `POST` | `/api/upload` | HMAC | Re-hospeda una URL temporal en Vercel Blob (permanente). |
+| `POST` | `/api/health` | HMAC | Diagnóstico: presencia de variables de entorno y modo de almacenamiento. |
 | `POST` | `/api/auth` | Pública | Login con contraseña → cookie de sesión. |
 | `GET` | `/api/auth` | Pública | Comprueba si hay sesión activa. |
 | `DELETE` | `/api/auth` | Pública | Cierra sesión. |

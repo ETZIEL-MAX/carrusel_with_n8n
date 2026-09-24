@@ -1,5 +1,5 @@
-import { put } from '@vercel/blob';
 import { randomUUID } from 'crypto';
+import { putImage, isLocal } from './_store.js';
 import {
   verifyWebhookSignature,
   validateImageUrl,
@@ -11,7 +11,6 @@ import {
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_WEBHOOK || '10', 10);
 const MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES || String(15 * 1024 * 1024), 10);
 const FETCH_TIMEOUT_MS = parseInt(process.env.UPLOAD_FETCH_TIMEOUT || '20000', 10);
-const BLOB_ACCESS = (process.env.BLOB_ACCESS || 'public').toLowerCase() === 'private' ? 'private' : 'public';
 
 const ALLOWED_HOSTS = (process.env.UPLOAD_ALLOWED_HOSTS || 'aliyuncs.com,cloudinary.com,pollinations.ai')
   .split(',')
@@ -68,7 +67,7 @@ export async function POST(request) {
     return errorResponse('A valid image `url` is required (http/https)', 400);
   }
 
-  if (!isHostAllowed(url)) {
+  if (!isLocal() && !isHostAllowed(url)) {
     return errorResponse(
       `Host no permitido. Configura UPLOAD_ALLOWED_HOSTS. Host recibido: ${(() => {
         try { return new URL(url).hostname; } catch { return 'invalido'; }
@@ -77,7 +76,7 @@ export async function POST(request) {
     );
   }
 
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  if (!isLocal() && !process.env.BLOB_READ_WRITE_TOKEN) {
     return errorResponse('Almacenamiento no configurado (falta BLOB_READ_WRITE_TOKEN)', 500);
   }
 
@@ -106,18 +105,13 @@ export async function POST(request) {
       return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
     }
 
-    const id = randomUUID().slice(0, 8);
-    const pathname = `carousel/${Date.now()}-${id}.${extensionFor(contentType)}`;
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${extensionFor(contentType)}`;
 
     phase = 'upload';
-    const blob = await put(pathname, buffer, {
-      access: BLOB_ACCESS,
-      contentType: contentType.split(';')[0].trim(),
-      addRandomSuffix: false,
-    });
+    const stored = await putImage(fileName, buffer, contentType.split(';')[0].trim(), request);
 
     return successResponse(
-      { url: blob.url, pathname: blob.pathname, contentType: blob.contentType, alt },
+      { url: stored.url, pathname: stored.pathname, contentType: stored.contentType, alt },
       'Image re-hosted permanently'
     );
   } catch (err) {
@@ -127,7 +121,7 @@ export async function POST(request) {
     console.error(`POST /api/upload error (${phase}):`, err);
     if (phase === 'upload') {
       const detail = [err?.name, err?.message, err?.cause?.message].filter(Boolean).join(' | ');
-      return errorResponse(`Error al guardar en Vercel Blob: ${detail || 'error'}`, 500);
+      return errorResponse(`Error al guardar la imagen: ${detail || 'error'}`, 500);
     }
     return errorResponse(`No se pudo descargar la imagen: ${err.message}`, 502);
   } finally {

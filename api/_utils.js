@@ -1,6 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
-import { getJson, setJson } from './_redis.js';
+import { getJson, setJson } from './_store.js';
 
 const IMAGES_KEY = 'carousel:images';
 const DEFAULT_IMAGES = [];

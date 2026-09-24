@@ -16,7 +16,10 @@ files; the backend is Vercel Functions written as ES modules.
 | Command | What it does |
 |---|---|
 | `npm install` | Installs runtime + dev dependencies. |
-| `npm run dev` | Runs `vercel dev` (local full stack, requires Redis env vars). |
+| `npm start` / `npm run dev:local` | Runs the standalone local server (`scripts/server.mjs`) with file storage — no Redis/Blob needed. |
+| `npm test` | End-to-end test of every endpoint against the local server. |
+| `docker compose up --build` | Runs the whole app in Docker on `http://localhost:8080`. |
+| `npm run dev` | Alias of the local server. |
 | `npm run deploy` | `vercel --prod`. |
 | `npm run hash:password` | Interactive prompt → prints `ADMIN_PASSWORD_HASH`. |
 | `node --check <file>` | Syntax check an individual file. |
@@ -34,17 +37,21 @@ for Redis (see git history for a full integration harness pattern).
   - `api.js` — thin `fetch` wrapper shared by both pages (`window.API`).
   - `styles.css` — all styling. Editorial/cinematic dark theme.
 - **Backend** (`api/`, Vercel Functions, ESM)
-  - `_redis.js` — minimal Redis REST client (Upstash-compatible). No SDK.
+  - `_store.js` — storage abstraction: Upstash/Vercel Blob on Vercel, local
+    files under `.data/` when `LOCAL_STORAGE=1` (Docker / local server).
+  - `_redis.js` — minimal Redis REST client (Upstash-compatible, prefix-agnostic). No SDK.
   - `_utils.js` — JWT, HMAC verification, validation, rate limiting, image ops,
     response helpers.
   - `images.js` — public `GET`; admin-only `POST`/`PATCH`/`DELETE`.
   - `webhook.js` — n8n endpoint, HMAC-authenticated, full replace.
   - `upload.js` — HMAC-authenticated; downloads a temporary image URL and
-    re-hosts it permanently in **Vercel Blob** (`@vercel/blob`). Hosts are
-    restricted by `UPLOAD_ALLOWED_HOSTS` to avoid SSRF.
+    re-hosts it (Vercel Blob, or `.data/uploads` locally). Hosts are
+    restricted by `UPLOAD_ALLOWED_HOSTS` to avoid SSRF (skipped when local).
+  - `health.js` — HMAC-protected diagnostics (env var presence, storage mode).
   - `auth.js` — login/logout/session check.
 
-Data lives under a single Redis key: `carousel:images` (a JSON array).
+Data lives under a single key: `carousel:images` (a JSON array). In local mode
+it is `.data/kv/carousel_images.json`; images are served from `/uploads/*`.
 
 ## Conventions
 
@@ -88,10 +95,14 @@ Data lives under a single Redis key: `carousel:images` (a JSON array).
 ## File map (quick reference)
 
 ```
+api/_store.js   storage abstraction (Redis/Blob vs local files)
 api/_utils.js   JWT, HMAC, validation, rate limit, image CRUD, responses
 api/_redis.js   getJson / setJson against Upstash REST
 api/images.js   GET (public) | POST/PATCH/DELETE (admin)
 api/webhook.js  POST (HMAC) — full replace
-api/upload.js   POST (HMAC) — re-host a temporary image URL in Vercel Blob
+api/upload.js   POST (HMAC) — re-host a temporary image URL (Blob or disk)
+api/health.js   POST (HMAC) — diagnostics
 api/auth.js     POST login | GET me | DELETE logout
+scripts/server.mjs  standalone local/Docker server
+scripts/test-e2e.mjs  end-to-end test (npm test)
 ```

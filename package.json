@@ -5,8 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vercel dev",
-    "dev:local": "node scripts/dev-local.mjs",
+    "start": "node scripts/server.mjs",
+    "dev": "node scripts/server.mjs",
+    "dev:local": "node scripts/server.mjs",
+    "test": "node scripts/test-e2e.mjs",
     "deploy": "vercel --prod",
     "hash:password": "node scripts/hash-password.js"
   },

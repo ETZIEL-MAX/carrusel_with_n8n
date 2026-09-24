@@ -41,6 +41,12 @@ Necesario para que `/api/upload` re-hospede las imágenes de n8n de forma perman
 2. **Create Database** → **Blob**.
 3. Conéctalo al proyecto. Vercel inyecta `BLOB_READ_WRITE_TOKEN` automáticamente.
 
+> **Importante:** el Blob store debe ser de acceso **público**. Si lo creas como
+> privado, `/api/upload` fallará con *"Cannot use public access on a private
+> store"* y el carrusel no podrá mostrar las imágenes. Si ya creaste uno privado,
+> borra el store y crea otro **público** (o define `BLOB_ACCESS=private`, pero
+> entonces las imágenes no serán visibles públicamente).
+
 > Si usas un generador de imágenes distinto a Alibaba/Qwen, añade su dominio a
 > `UPLOAD_ALLOWED_HOSTS` (variable de entorno).
 

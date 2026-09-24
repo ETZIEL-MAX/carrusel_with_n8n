@@ -1,70 +1,31 @@
-// Servidor de desarrollo local.
-// Sirve el sitio estático y ejecuta los handlers reales de api/ contra un
-// Redis en memoria (sin necesidad de Upstash ni de `vercel dev`).
+// Servidor local / Docker.
+// Ejecuta los handlers reales de api/ con almacenamiento en disco (LOCAL_STORAGE=1):
+// no necesita Upstash ni Vercel Blob.
 //
-//   node scripts/dev-local.mjs
+//   node scripts/server.mjs          (o: npm run dev:local)
 //
-// Contraseña de admin en local: admin12345678
+// Datos persistentes en .data/ (KV en .data/kv, imágenes en .data/uploads).
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { extname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hash } from '@node-rs/argon2';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3000);
-const DEV_PASSWORD = 'admin12345678';
+const DEV_PASSWORD = process.env.ADMIN_PASSWORD || '10Cuidado.2026';
 
-// ---- Variables de entorno para el modo local ----
-process.env.KV_REST_API_URL = 'http://in-memory.redis.local';
-process.env.KV_REST_API_TOKEN = 'dev-token';
+// ---- Entorno local (antes de importar los handlers) ----
+process.env.LOCAL_STORAGE = process.env.LOCAL_STORAGE || '1';
+process.env.LOCAL_DATA_DIR = process.env.LOCAL_DATA_DIR || join(ROOT, '.data');
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'dev-jwt-secret-0123456789abcdef';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'dev-webhook-secret';
-process.env.ADMIN_PASSWORD_HASH = await hash(DEV_PASSWORD);
+process.env.ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || (await hash(DEV_PASSWORD));
 
-// ---- Redis en memoria ----
-const store = new Map();
-globalThis.fetch = async (url, opts = {}) => {
-  if (String(url) === process.env.KV_REST_API_URL) {
-    const args = JSON.parse(opts.body);
-    const cmd = String(args[0]).toUpperCase();
-    if (cmd === 'GET') {
-      return new Response(JSON.stringify({ result: store.get(args[1]) ?? null }));
-    }
-    if (cmd === 'SET') {
-      store.set(args[1], args[2]);
-      return new Response(JSON.stringify({ result: 'OK' }));
-    }
-  }
-  throw new Error('fetch bloqueado en dev-local: ' + url);
-};
-
-// ---- Datos de ejemplo ----
-const seed = [
-  ['Montañas al amanecer', 'https://picsum.photos/seed/amanecer/1920/1080'],
-  ['Costa salvaje', 'https://picsum.photos/seed/costa/1920/1080'],
-  ['Bosque en la niebla', 'https://picsum.photos/seed/bosque/1920/1080'],
-  ['Arquitectura urbana', 'https://picsum.photos/seed/ciudad/1920/1080'],
-  ['Desierto dorado', 'https://picsum.photos/seed/desierto/1920/1080'],
-];
-
-store.set(
-  'carousel:images',
-  JSON.stringify(
-    seed.map(([alt, url], i) => ({
-      id: `seed-${i + 1}`,
-      url,
-      alt,
-      order: i,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }))
-  )
-);
-
-// ---- Handlers reales (se importan DESPUÉS de configurar env y fetch) ----
+// ---- Handlers reales ----
+const { getJson, setJson } = await import('../api/_store.js');
 const imagesHandler = await import('../api/images.js');
 const authHandler = await import('../api/auth.js');
 const webhookHandler = await import('../api/webhook.js');
@@ -79,6 +40,30 @@ const API_ROUTES = {
   '/api/health': healthHandler,
 };
 
+// ---- Seed de ejemplo (solo si está vacío) ----
+const IMAGES_KEY = 'carousel:images';
+const existing = await getJson(IMAGES_KEY);
+if (!Array.isArray(existing) || existing.length === 0) {
+  const seed = [
+    ['Montañas al amanecer', 'https://picsum.photos/seed/amanecer/1920/1080'],
+    ['Costa salvaje', 'https://picsum.photos/seed/costa/1920/1080'],
+    ['Bosque en la niebla', 'https://picsum.photos/seed/bosque/1920/1080'],
+    ['Arquitectura urbana', 'https://picsum.photos/seed/ciudad/1920/1080'],
+    ['Desierto dorado', 'https://picsum.photos/seed/desierto/1920/1080'],
+  ];
+  await setJson(
+    IMAGES_KEY,
+    seed.map(([alt, url], i) => ({
+      id: `seed-${i + 1}`,
+      url,
+      alt,
+      order: i,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }))
+  );
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -87,24 +72,21 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
   '.ico': 'image/x-icon',
   '.map': 'application/json',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
-async function serveStatic(res, pathname) {
-  let file = pathname === '/' ? '/index.html' : pathname;
-  if (file === '/admin' || file === '/admin/') file = '/admin.html';
-  if (pathname.startsWith('/api/')) return false;
-
-  const target = join(ROOT, file);
-  if (!target.startsWith(ROOT)) {
-    res.writeHead(403).end('Forbidden');
-    return true;
-  }
-
+async function sendFile(res, absolutePath) {
   try {
-    const data = await readFile(target);
-    res.writeHead(200, { 'Content-Type': MIME[extname(target)] || 'application/octet-stream' });
+    const data = await readFile(absolutePath);
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(absolutePath).toLowerCase()] || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+    });
     res.end(data);
     return true;
   } catch {
@@ -112,11 +94,30 @@ async function serveStatic(res, pathname) {
   }
 }
 
+async function serveStatic(res, pathname) {
+  // Imágenes subidas
+  if (pathname.startsWith('/uploads/')) {
+    const file = join(process.env.LOCAL_DATA_DIR, 'uploads', basename(pathname));
+    return sendFile(res, file);
+  }
+
+  if (pathname.startsWith('/api/')) return false;
+
+  let file = pathname === '/' ? '/index.html' : pathname;
+  if (file === '/admin' || file === '/admin/') file = '/admin.html';
+
+  const target = join(ROOT, file);
+  if (!target.startsWith(ROOT)) {
+    res.writeHead(403).end('Forbidden');
+    return true;
+  }
+  return sendFile(res, target);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = url.pathname;
 
-  // --- API ---
   const module = API_ROUTES[pathname];
   if (module) {
     const handler = module[req.method];
@@ -149,23 +150,19 @@ const server = http.createServer(async (req, res) => {
       });
       // En local (http) quitamos Secure para que el navegador guarde la cookie.
       if (setCookies.length) {
-        res.setHeader(
-          'Set-Cookie',
-          setCookies.map((c) => c.replace(/;\s*Secure/gi, ''))
-        );
+        res.setHeader('Set-Cookie', setCookies.map((c) => c.replace(/;\s*Secure/gi, '')));
       }
       res.writeHead(webRes.status);
       res.end(Buffer.from(await webRes.arrayBuffer()));
     } catch (err) {
       console.error('API error:', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' }).end(
-        JSON.stringify({ error: 'Error interno en dev-local', detail: err.message })
-      );
+      res
+        .writeHead(500, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify({ error: 'Error interno del servidor local', detail: err.message }));
     }
     return;
   }
 
-  // --- Estáticos ---
   if (await serveStatic(res, pathname)) return;
 
   res.writeHead(404, { 'Content-Type': 'text/plain' }).end('404 Not Found');
@@ -173,10 +170,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log('');
-  console.log('  Carrusel en local');
+  console.log('  Carrusel (local)');
   console.log(`  Carrusel : http://localhost:${PORT}/`);
   console.log(`  Admin    : http://localhost:${PORT}/admin`);
   console.log(`  Password : ${DEV_PASSWORD}`);
+  console.log(`  Datos    : ${process.env.LOCAL_DATA_DIR}`);
   console.log('');
   console.log('  Ctrl+C para detener.');
   console.log('');

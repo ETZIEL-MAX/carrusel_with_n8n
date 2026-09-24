@@ -9,7 +9,11 @@ node_modules/
 # opencode session state
 .opencode/
 
+# Local persistent data (Docker / dev server)
+.data/
+
 # Test harness scratch files
 _test.mjs
 _itest.mjs
+
 

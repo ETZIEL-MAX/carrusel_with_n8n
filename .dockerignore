@@ -1,0 +1,9 @@
+node_modules
+.git
+.gitignore
+.vercel
+.data
+.opencode
+*.log
+_test*.mjs
+_itest*.mjs
