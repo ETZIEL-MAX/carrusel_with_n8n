@@ -1,0 +1,22 @@
+{
+  "name": "carousel-app",
+  "version": "1.0.0",
+  "description": "Full-screen carousel with n8n sync and admin panel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod",
+    "hash:password": "node scripts/hash-password.js"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "jose": "^5.2.0"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Galería</title>
+  <meta name="description" content="Carrusel de imágenes a pantalla completa" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,200..700;1,9..144,300..600&family=Manrope:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="carousel" id="carousel" aria-roledescription="carrusel" aria-label="Galería de imágenes">
+    <div class="progress" aria-hidden="true"><div class="progress__fill" id="progressFill"></div></div>
+
+    <div id="slides" aria-live="polite"></div>
+
+    <div class="empty" id="empty" hidden>
+      <p class="slide-index">Sin contenido</p>
+      <h1 class="empty__title">Aún no hay imágenes<br />en esta galería.</h1>
+      <p class="empty__text">
+        Añade imágenes desde el panel de administración o deja que n8n las
+        sincronice a través del webhook.
+      </p>
+      <a class="empty__link" href="/admin">Ir al panel →</a>
+    </div>
+
+    <div class="controls">
+      <button class="nav-arrow nav-arrow--prev" id="prevBtn" aria-label="Anterior">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+      </button>
+      <button class="nav-arrow nav-arrow--next" id="nextBtn" aria-label="Siguiente">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+      </button>
+      <div class="dots" id="dots" role="tablist" aria-label="Seleccionar diapositiva"></div>
+    </div>
+  </main>
+
+  <a class="admin-link" href="/admin">Admin</a>
+
+  <script src="/api.js"></script>
+  <script src="/carousel.js"></script>
+</body>
+</html>

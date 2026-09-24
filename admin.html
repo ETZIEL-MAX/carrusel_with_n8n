@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin · Galería</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,200..700;1,9..144,300..600&family=Manrope:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="admin">
+  <!-- Login -->
+  <section class="login-view" id="loginView">
+    <form class="login-card" id="loginForm">
+      <div>
+        <h1>Panel de control</h1>
+        <p>Introduce la contraseña de administrador para gestionar el carrusel.</p>
+      </div>
+      <div class="field">
+        <label for="password">Contraseña</label>
+        <input type="password" id="password" autocomplete="current-password" required />
+      </div>
+      <p class="error-text" id="loginError"></p>
+      <button class="btn btn--primary" type="submit" id="loginBtn">Entrar</button>
+    </form>
+  </section>
+
+  <!-- Dashboard -->
+  <section class="admin-shell" id="dashboard" hidden>
+    <header class="admin-header">
+      <div>
+        <h1 class="admin-title">Carrusel <span>admin</span></h1>
+        <p class="hint" id="countHint">0 imágenes</p>
+      </div>
+      <div class="admin-actions">
+        <a class="btn" href="/" target="_blank" rel="noopener">Ver sitio</a>
+        <button class="btn btn--primary" id="addBtn">+ Añadir imagen</button>
+        <button class="btn btn--danger" id="logoutBtn">Salir</button>
+      </div>
+    </header>
+
+    <div id="grid" class="image-grid"></div>
+    <div id="gridEmpty" class="empty" hidden style="position:static; min-height:40vh;">
+      <h2 class="empty__title">No hay imágenes todavía</h2>
+      <p class="empty__text">Añade tu primera imagen o sincroniza desde n8n.</p>
+    </div>
+  </section>
+
+  <!-- Modal: add / edit -->
+  <div class="modal-backdrop" id="modalBackdrop">
+    <form class="modal" id="imageForm">
+      <h2 id="modalTitle">Añadir imagen</h2>
+      <div class="field">
+        <label for="imgUrl">URL de la imagen</label>
+        <input type="url" id="imgUrl" placeholder="https://res.cloudinary.com/..." required />
+      </div>
+      <div class="field">
+        <label for="imgAlt">Texto / título (opcional)</label>
+        <textarea id="imgAlt" placeholder="Descripción que aparece sobre la imagen"></textarea>
+      </div>
+      <p class="error-text" id="formError"></p>
+      <div class="modal__foot">
+        <button class="btn" type="button" id="cancelBtn">Cancelar</button>
+        <button class="btn btn--primary" type="submit" id="saveBtn">Guardar</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script src="/api.js"></script>
+  <script src="/admin.js"></script>
+</body>
+</html>
