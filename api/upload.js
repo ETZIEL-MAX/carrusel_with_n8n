@@ -82,6 +82,7 @@ export async function POST(request) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let phase = 'download';
 
   try {
     const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
@@ -107,6 +108,7 @@ export async function POST(request) {
     const id = randomUUID().slice(0, 8);
     const pathname = `carousel/${Date.now()}-${id}.${extensionFor(contentType)}`;
 
+    phase = 'upload';
     const blob = await put(pathname, buffer, {
       access: 'public',
       contentType: contentType.split(';')[0].trim(),
@@ -121,8 +123,11 @@ export async function POST(request) {
     if (err.name === 'AbortError') {
       return errorResponse('Tiempo de descarga agotado', 504);
     }
-    console.error('POST /api/upload error:', err);
-    return errorResponse('Failed to upload image', 500);
+    console.error(`POST /api/upload error (${phase}):`, err);
+    if (phase === 'upload') {
+      return errorResponse(`Error al guardar en Vercel Blob: ${err.name || 'error'}`, 500);
+    }
+    return errorResponse(`No se pudo descargar la imagen: ${err.message}`, 502);
   } finally {
     clearTimeout(timer);
   }
