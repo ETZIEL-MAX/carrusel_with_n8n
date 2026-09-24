@@ -39,6 +39,9 @@ for Redis (see git history for a full integration harness pattern).
     response helpers.
   - `images.js` — public `GET`; admin-only `POST`/`PATCH`/`DELETE`.
   - `webhook.js` — n8n endpoint, HMAC-authenticated, full replace.
+  - `upload.js` — HMAC-authenticated; downloads a temporary image URL and
+    re-hosts it permanently in **Vercel Blob** (`@vercel/blob`). Hosts are
+    restricted by `UPLOAD_ALLOWED_HOSTS` to avoid SSRF.
   - `auth.js` — login/logout/session check.
 
 Data lives under a single Redis key: `carousel:images` (a JSON array).
@@ -89,5 +92,6 @@ api/_utils.js   JWT, HMAC, validation, rate limit, image CRUD, responses
 api/_redis.js   getJson / setJson against Upstash REST
 api/images.js   GET (public) | POST/PATCH/DELETE (admin)
 api/webhook.js  POST (HMAC) — full replace
+api/upload.js   POST (HMAC) — re-host a temporary image URL in Vercel Blob
 api/auth.js     POST login | GET me | DELETE logout
 ```

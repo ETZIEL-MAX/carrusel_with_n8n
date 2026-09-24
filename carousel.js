@@ -1,5 +1,5 @@
 (() => {
-  const AUTOPLAY_MS = 6500;
+  const AUTOPLAY_MS = 5000;
   const POLL_MS = 10000;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -141,8 +141,12 @@
     else if (e.key === ' ') { e.preventDefault(); paused ? resume() : pause(); }
   });
 
-  carouselEl.addEventListener('mouseenter', pause);
-  carouselEl.addEventListener('mouseleave', resume);
+  // Pausar solo al pasar sobre los controles, no en toda la pantalla
+  // (el carrusel es full-screen: un hover global detendría el autoplay siempre).
+  document.querySelectorAll('.nav-arrow, .dots').forEach((el) => {
+    el.addEventListener('mouseenter', pause);
+    el.addEventListener('mouseleave', resume);
+  });
 
   // Touch / swipe
   let touchStartX = 0;

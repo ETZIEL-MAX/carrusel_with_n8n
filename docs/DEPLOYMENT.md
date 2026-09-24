@@ -33,6 +33,19 @@ Marketplace de Vercel.
 
 ---
 
+## 2b. Crear el Blob store (Vercel Blob)
+
+Necesario para que `/api/upload` re-hospede las imágenes de n8n de forma permanente.
+
+1. En tu proyecto de Vercel → pestaña **Storage**.
+2. **Create Database** → **Blob**.
+3. Conéctalo al proyecto. Vercel inyecta `BLOB_READ_WRITE_TOKEN` automáticamente.
+
+> Si usas un generador de imágenes distinto a Alibaba/Qwen, añade su dominio a
+> `UPLOAD_ALLOWED_HOSTS` (variable de entorno).
+
+---
+
 ## 3. Generar secretos
 
 ### Hash de la contraseña de admin

@@ -194,6 +194,68 @@ curl -X POST https://TU-APP.vercel.app/api/webhook \
 
 ---
 
+## Upload (re-hospedaje de imágenes)
+
+### `POST /api/upload`
+
+Descarga una imagen desde una URL **temporal** y la re-hospeda de forma
+**permanente en Vercel Blob**, devolviendo la nueva URL. Pensado para que n8n
+convierta la URL efímera de un generador de imágenes (p. ej. Alibaba/Qwen, que
+caduca en ~24 h) en una URL estable para el carrusel.
+
+- **Auth**: header `X-Webhook-Secret` = HMAC-SHA256 (hex) del **cuerpo crudo**, con `WEBHOOK_SECRET`.
+- **Rate limit**: `RATE_LIMIT_WEBHOOK` (10/min por defecto).
+- **Límites**: 15 MB por defecto (`UPLOAD_MAX_BYTES`); timeout de descarga 20 s (`UPLOAD_FETCH_TIMEOUT`).
+
+**Body**
+
+```json
+{ "url": "https://dashscope-....aliyuncs.com/....png?Expires=...", "alt": "Título opcional" }
+```
+
+`url` debe ser `http(s)` y su host debe estar en `UPLOAD_ALLOWED_HOSTS`
+(por defecto `aliyuncs.com,cloudinary.com,pollinations.ai`) para evitar SSRF.
+
+**Respuesta 200**
+
+```json
+{
+  "success": true,
+  "message": "Image re-hosted permanently",
+  "data": {
+    "url": "https://xxxx.public.blob.vercel-storage.com/carousel/1712345678-1a2b3c4d.png",
+    "pathname": "carousel/1712345678-1a2b3c4d.png",
+    "contentType": "image/png",
+    "alt": "Título opcional"
+  }
+}
+```
+
+**Errores**
+
+| Código | Motivo |
+|---|---|
+| `400` | URL ausente/inválida, JSON inválido, host no permitido, o no es una imagen. |
+| `401` | Falta la firma o no coincide. |
+| `413` | Imagen demasiado grande. |
+| `429` | Rate limit excedido. |
+| `500` | `BLOB_READ_WRITE_TOKEN` no configurado o fallo al subir. |
+| `502`/`504` | No se pudo descargar la imagen o expiró el tiempo. |
+
+**Ejemplo**
+
+```bash
+BODY='{"url":"https://dashscope-....aliyuncs.com/x.png","alt":"Poster"}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+
+curl -X POST https://TU-APP.vercel.app/api/upload \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: $SIG" \
+  -d "$BODY"
+```
+
+---
+
 ## Autenticación
 
 ### `POST /api/auth`

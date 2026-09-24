@@ -140,6 +140,9 @@ Abre `http://localhost:3000` para el carrusel y `http://localhost:3000/admin` pa
 | `JWT_SECRET` | Sí | Secreto para firmar sesiones (mín. 32 caracteres aleatorios). |
 | `JWT_EXPIRY` | No | Caducidad de la sesión. Por defecto `1h`. |
 | `WEBHOOK_SECRET` | Sí | Secreto compartido con n8n para la firma HMAC. |
+| `BLOB_READ_WRITE_TOKEN` | Sí (para upload) | Token de Vercel Blob. Lo inyecta Vercel al crear un Blob store. |
+| `UPLOAD_ALLOWED_HOSTS` | No | Hosts permitidos como origen de imagen en `/api/upload`. Default `aliyuncs.com,cloudinary.com,pollinations.ai`. |
+| `UPLOAD_MAX_BYTES` | No | Tamaño máximo de imagen en `/api/upload`. Default 15 MB. |
 | `RATE_LIMIT_IMAGES` | No | Peticiones/min por IP en `/api/images`. Por defecto `60`. |
 | `RATE_LIMIT_WEBHOOK` | No | Peticiones/min por IP en `/api/webhook`. Por defecto `10`. |
 | `RATE_LIMIT_AUTH` | No | Intentos de login/min por IP. Por defecto `5`. |
@@ -172,6 +175,7 @@ Resumen; detalle completo en [`docs/API.md`](docs/API.md).
 | `PATCH` | `/api/images` | Admin | Actualiza una imagen o reordena varias. |
 | `DELETE` | `/api/images?id=...` | Admin | Elimina una imagen. |
 | `POST` | `/api/webhook` | HMAC | Reemplaza todo el carrusel (n8n). |
+| `POST` | `/api/upload` | HMAC | Re-hospeda una URL temporal en Vercel Blob (permanente). |
 | `POST` | `/api/auth` | Pública | Login con contraseña → cookie de sesión. |
 | `GET` | `/api/auth` | Pública | Comprueba si hay sesión activa. |
 | `DELETE` | `/api/auth` | Pública | Cierra sesión. |

@@ -115,10 +115,13 @@
     grid.innerHTML = images
       .map((img) => `
       <article class="image-card" draggable="true" data-id="${escapeHtml(img.id)}">
-        <img class="image-card__thumb" src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" />
+        <a class="image-card__thumb-link" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir imagen en una pestaña nueva">
+          <img class="image-card__thumb" src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" draggable="false" />
+          <span class="image-card__open">Abrir ↗</span>
+        </a>
         <div class="image-card__body">
           <div class="image-card__alt">${escapeHtml(img.alt || 'Sin título')}</div>
-          <div class="image-card__url" title="${escapeHtml(img.url)}">${escapeHtml(img.url)}</div>
+          <a class="image-card__url" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir: ${escapeHtml(img.url)}">${escapeHtml(img.url)}</a>
           <div class="image-card__foot">
             <span class="image-card__order">#${img.order}</span>
             <div style="display:flex; gap:.4rem;">

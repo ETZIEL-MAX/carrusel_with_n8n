@@ -170,3 +170,48 @@ curl -i -X POST http://localhost:3000/api/webhook \
   -H "X-Webhook-Secret: $SIG" \
   -d "$BODY"
 ```
+
+---
+
+## 9. Re-hospedaje permanente (Vercel Blob)
+
+Los generadores de imágenes suelen devolver URLs **temporales** (Alibaba/Qwen
+caduca en ~24 h). Para que el carrusel no las pierda, usa `/api/upload`: recibe
+la URL temporal, descarga la imagen y la guarda **permanentemente** en Vercel
+Blob, devolviendo la URL estable.
+
+### Flujo recomendado
+
+```
+Generar imagen → POST /api/upload  (con la URL temporal, firmado)
+                     └─► devuelve { url: <permanente> }
+                          └─► POST /api/webhook  (con la URL permanente)
+```
+
+### Nodo Code: firmar el body de upload
+
+```js
+const crypto = require('crypto');
+const payload = { url: $json.imageUrl, alt: $json.alt ?? '' };
+const body = JSON.stringify(payload);
+const signature = crypto.createHmac('sha256', $env.WEBHOOK_SECRET)
+  .update(body, 'utf8').digest('hex');
+return [{ json: { body, signature } }];
+```
+
+### Nodo HTTP Request (upload)
+
+| Campo | Valor |
+|---|---|
+| Method | `POST` |
+| URL | `https://TU-APP.vercel.app/api/upload` |
+| Body Content Type | `Raw` / `JSON` |
+| Body | `={{ $json.body }}` |
+| Header | `Content-Type: application/json` |
+| Header | `X-Webhook-Secret: {{ $json.signature }}` |
+
+La respuesta trae `data.url` (permanente). Úsala luego en `/api/webhook`.
+
+> El host de la URL de origen debe estar en `UPLOAD_ALLOWED_HOSTS`
+> (por defecto `aliyuncs.com,cloudinary.com,pollinations.ai`).
+

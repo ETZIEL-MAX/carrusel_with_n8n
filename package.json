@@ -6,11 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
+    "dev:local": "node scripts/dev-local.mjs",
     "deploy": "vercel --prod",
     "hash:password": "node scripts/hash-password.js"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
+    "@vercel/blob": "^2.8.0",
     "jose": "^5.2.0"
   },
   "devDependencies": {
