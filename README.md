@@ -37,8 +37,9 @@ Desplegado como sitio estático + funciones serverless en **Vercel**, con **Upst
 - Reordenamiento por arrastrar y soltar.
 - Vista previa del orden y contador de imágenes.
 
-**Webhook para n8n (`/api/webhook`)**
-- Reemplazo total del carrusel en una sola petición.
+**Webhook para n8n (`/api/webhook/USERx`)**
+- Cada carrusel tiene su propio webhook.
+- Por defecto **agrega** imágenes sin borrar (`mode: "append"`); `mode: "replace"` reemplaza todo.
 - Autenticación por firma **HMAC-SHA256** (sin exponer secretos en la URL).
 - Validación de cada imagen y límite de 100 por petición.
 
@@ -47,7 +48,7 @@ Desplegado como sitio estático + funciones serverless en **Vercel**, con **Upst
 ## Arquitectura
 
 ```
-┌─────────────┐   POST /api/webhook   ┌──────────────────┐
+┌─────────────┐ POST /api/webhook/USERx ┌──────────────────┐
 │    n8n      │──(HMAC-SHA256)──────▶ │                  │
 └─────────────┘                       │   Upstash Redis  │
                                       │  carousel:images │
@@ -83,8 +84,13 @@ pagina_con_endpoints/
 ├── api/
 │   ├── _utils.js         # Utilidades compartidas (JWT, HMAC, validación)
 │   ├── _redis.js         # Cliente Redis REST (Upstash / Vercel KV)
+│   ├── _webhook-shared.js# Lógica de los endpoints por usuario (webhook/upload)
+│   ├── webhook/
+│   │   └── [userId].js   # Webhook por carrusel (HMAC)
+│   ├── upload/
+│   │   └── [userId].js   # Re-hospedaje por carrusel (HMAC)
 │   ├── images.js         # CRUD de imágenes
-│   ├── webhook.js        # Endpoint para n8n (HMAC)
+│   ├── webhook.js        # (retirado) responde 410 Gone
 │   └── auth.js           # Login / logout / sesión
 ├── scripts/
 │   └── hash-password.js  # Generador de hash Argon2id
@@ -152,6 +158,7 @@ docker compose down
 | `WEBHOOK_SECRET` | Sí | Secreto compartido con n8n para la firma HMAC. |
 | `LOCAL_STORAGE` | No | `1` usa archivos locales (`.data/`) en vez de Redis/Blob. Lo activa el servidor local y Docker. |
 | `LOCAL_DATA_DIR` | No | Carpeta de datos en modo local. Por defecto `.data/`. |
+| `IMAGE_STORAGE` | No | `local` guarda los archivos de imagen en `LOCAL_DATA_DIR/uploads` aunque los datos estén en Redis (lo usa Docker). Déjalo vacío en Vercel para usar Vercel Blob. |
 | `ADMIN_PASSWORD` | No | Solo local/Docker: el servidor hashea esta contraseña al arrancar. |
 | `BLOB_ACCESS` | No | `public` (por defecto) o `private` para Vercel Blob. |
 | `BLOB_READ_WRITE_TOKEN` | Sí (para upload en Vercel) | Token de Vercel Blob. Lo inyecta Vercel al crear un Blob store. |
@@ -188,8 +195,8 @@ Resumen; detalle completo en [`docs/API.md`](docs/API.md).
 | `POST` | `/api/images` | Admin | Añade una imagen. |
 | `PATCH` | `/api/images` | Admin | Actualiza una imagen o reordena varias. |
 | `DELETE` | `/api/images?id=...` | Admin | Elimina una imagen. |
-| `POST` | `/api/webhook` | HMAC | Reemplaza todo el carrusel (n8n). |
-| `POST` | `/api/upload` | HMAC | Re-hospeda una URL temporal en Vercel Blob (permanente). |
+| `POST` | `/api/webhook/USERx` | HMAC | Webhook del carrusel: agrega (o reemplaza con `mode: "replace"`). |
+| `POST` | `/api/upload/USERx` | HMAC | Re-hospeda una URL temporal como permanente. |
 | `POST` | `/api/health` | HMAC | Diagnóstico: presencia de variables de entorno y modo de almacenamiento. |
 | `POST` | `/api/auth` | Pública | Login con contraseña → cookie de sesión. |
 | `GET` | `/api/auth` | Pública | Comprueba si hay sesión activa. |
@@ -214,15 +221,17 @@ Forma de una imagen:
 
 Ver guía completa en [`docs/N8N.md`](docs/N8N.md).
 
-**Resumen:** envía un `POST` a `/api/webhook` con el array completo de imágenes
-y el header `X-Webhook-Secret` conteniendo el HMAC-SHA256 del cuerpo crudo.
+**Resumen:** envía un `POST` a `/api/webhook/USERx` con las imágenes y el header
+`X-Webhook-Secret` conteniendo el HMAC-SHA256 del cuerpo crudo. Por defecto
+**agrega** (omite URLs repetidas); usa `"mode": "replace"` para reemplazar todo.
 
 ```json
 {
   "images": [
     { "url": "https://cdn.ejemplo.com/1.jpg", "alt": "Primera" },
     { "url": "https://cdn.ejemplo.com/2.jpg", "alt": "Segunda" }
-  ]
+  ],
+  "mode": "append"
 }
 ```
 
@@ -230,7 +239,7 @@ En n8n, calcula la firma en un nodo **Code**:
 
 ```js
 const crypto = require('crypto');
-const body = JSON.stringify({ images: $json.images });
+const body = JSON.stringify({ images: $json.images, mode: 'append' });
 const signature = crypto
   .createHmac('sha256', $env.WEBHOOK_SECRET)
   .update(body, 'utf8')
@@ -239,7 +248,7 @@ const signature = crypto
 return [{ json: { body, signature } }];
 ```
 
-Luego un nodo **HTTP Request**: `POST https://TU-APP.vercel.app/api/webhook`,
+Luego un nodo **HTTP Request**: `POST https://carrusel.etziel.com/api/webhook/USER1`,
 body `={{ $json.body }}` (tipo *raw / JSON*) y header
 `X-Webhook-Secret: {{ $json.signature }}`.
 

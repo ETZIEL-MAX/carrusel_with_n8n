@@ -1,9 +1,9 @@
-// Minimal Redis REST client compatible with both the legacy Vercel KV
-// integration and the Upstash Redis marketplace integration.
-//
-// Accepts the exact names (KV_REST_API_URL / UPSTASH_REDIS_REST_URL) and also
-// any custom-prefixed variant (e.g. MYAPP_KV_REST_API_URL), which Vercel's
-// "Custom Prefix" option on a storage integration produces.
+// Redis client: supports ioredis (via REDIS_URL) or Upstash REST (KV_REST_API_URL / UPSTASH_*).
+// - REDIS_URL=redis://host:6379 -> uses ioredis (local/Docker)
+// - KV_REST_API_URL + KV_REST_API_TOKEN -> uses Upstash REST API (Vercel)
+
+let ioredis = null;
+let restConfig = null;
 
 function pickEnv(suffixes) {
   for (const name of suffixes) {
@@ -17,24 +17,40 @@ function pickEnv(suffixes) {
   return undefined;
 }
 
-function resolve() {
-  return {
-    url: pickEnv(['KV_REST_API_URL', 'UPSTASH_REDIS_REST_URL']),
-    token: pickEnv(['KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_TOKEN']),
-  };
+function resolveRest() {
+  if (!restConfig) {
+    restConfig = {
+      url: pickEnv(['KV_REST_API_URL', 'UPSTASH_REDIS_REST_URL']),
+      token: pickEnv(['KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_TOKEN']),
+    };
+  }
+  return restConfig;
+}
+
+async function getIoredis() {
+  if (!ioredis && process.env.REDIS_URL) {
+    const { default: Redis } = await import('ioredis');
+    ioredis = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      retryStrategy: (times) => Math.min(times * 100, 3000),
+      lazyConnect: true,
+    });
+    ioredis.on('error', (err) => console.error('ioredis error:', err.message));
+  }
+  return ioredis;
 }
 
 export function isConfigured() {
-  const { url, token } = resolve();
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) return true;
+  const { url, token } = resolveRest();
   return Boolean(url && token);
 }
 
-async function command(...args) {
-  const { url, token } = resolve();
+async function restCommand(...args) {
+  const { url, token } = resolveRest();
   if (!url || !token) {
-    throw new Error(
-      'Redis no configurado. Define KV_REST_API_URL y KV_REST_API_TOKEN (o las variantes UPSTASH_*).'
-    );
+    throw new Error('Redis no configurado. Define REDIS_URL o KV_REST_API_URL + KV_REST_API_TOKEN.');
   }
 
   const res = await fetch(url, {
@@ -56,6 +72,19 @@ async function command(...args) {
   return data.result;
 }
 
+async function ioCommand(...args) {
+  const client = await getIoredis();
+  if (!client) throw new Error('ioredis no inicializado');
+  if (client.status === 'wait') await client.connect();
+  return client.call(...args);
+}
+
+async function command(...args) {
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) return ioCommand(...args);
+  return restCommand(...args);
+}
+
 export async function getJson(key) {
   const raw = await command('GET', key);
   if (raw == null) return null;
@@ -69,5 +98,10 @@ export async function getJson(key) {
 
 export async function setJson(key, value) {
   await command('SET', key, JSON.stringify(value));
+  return true;
+}
+
+export async function delKey(key) {
+  await command('DEL', key);
   return true;
 }

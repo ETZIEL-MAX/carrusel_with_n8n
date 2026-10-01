@@ -9,7 +9,7 @@ RUN npm install --omit=dev
 
 COPY . .
 
-ENV LOCAL_STORAGE=1
+ENV LOCAL_STORAGE=0
 ENV PORT=8080
 EXPOSE 8080
 

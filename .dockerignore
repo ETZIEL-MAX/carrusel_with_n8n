@@ -7,3 +7,9 @@ node_modules
 *.log
 _test*.mjs
 _itest*.mjs
+test*.json
+.env
+.env.*
+!.env.example
+deploy
+docs

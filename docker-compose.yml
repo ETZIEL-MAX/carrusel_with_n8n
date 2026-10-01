@@ -5,11 +5,28 @@ services:
     ports:
       - "8080:8080"
     environment:
-      LOCAL_STORAGE: "1"
+      LOCAL_STORAGE: "0"
+      IMAGE_STORAGE: "local"
+      REDIS_URL: "redis://redis:6379"
       PORT: "8080"
-      ADMIN_PASSWORD: "10Cuidado.2026"
+      ADMIN_PASSWORD_HASH: "$$argon2id$$v=19$$m=19456,t=2,p=1$$Jh0XC1lAaTMwmkroh0rIZA$$ZbFZ7LNc6QJqk/hbVtOhv1V7rsORlWFOh7OOPKnubTk"
       JWT_SECRET: "dev-jwt-secret-0123456789abcdef"
-      WEBHOOK_SECRET: "dev-webhook-secret"
+      WEBHOOK_SECRET: "c8ae00faf94cca9533b99766bed6e72c2be09f758a40e8ac4d501e5dd135bc11"
     volumes:
       - ./.data:/app/.data
+    depends_on:
+      - redis
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: carrusel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+volumes:
+  redis_data:

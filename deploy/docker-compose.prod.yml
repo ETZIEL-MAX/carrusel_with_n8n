@@ -1,0 +1,50 @@
+# Producción en el EC2 compartido con plasticosvirgo.com.
+# - Solo escucha en 127.0.0.1:8080 (nginx del host hace de proxy HTTPS).
+# - Límites de memoria + oom_score_adj alto: si falta RAM, el kernel mata
+#   estos contenedores antes que al Next.js de plasticosvirgo.
+# - La imagen se construye en local y se carga con `docker load` (no se
+#   compila nada en el servidor).
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+name: carrusel
+
+services:
+  carrusel:
+    image: carrusel:prod
+    container_name: carrusel
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      LOCAL_STORAGE: "0"
+      IMAGE_STORAGE: "local"
+      REDIS_URL: "redis://redis:6379"
+      PORT: "8080"
+      NODE_OPTIONS: "--max-old-space-size=128"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/.data
+    depends_on:
+      - redis
+    mem_limit: 256m
+    memswap_limit: 384m
+    oom_score_adj: 1000
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  redis:
+    image: redis:7-alpine
+    container_name: carrusel-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 48mb --maxmemory-policy noeviction
+    volumes:
+      - ./redis:/data
+    mem_limit: 96m
+    memswap_limit: 128m
+    oom_score_adj: 1000
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

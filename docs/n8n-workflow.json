@@ -12,7 +12,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const crypto = require('crypto');\n\n// Cambia este array por tus imágenes reales.\n// Normalmente vendría de un nodo anterior: items.map(...)\nconst images = [\n  { url: 'https://picsum.photos/seed/uno/1920/1080', alt: 'Primera imagen' },\n  { url: 'https://picsum.photos/seed/dos/1920/1080', alt: 'Segunda imagen' },\n];\n\n// Serializa UNA sola vez. Este string exacto es el que se firma y se envía.\nconst body = JSON.stringify({ images });\n\nconst secret = $env.WEBHOOK_SECRET;\nif (!secret) {\n  throw new Error('Falta la variable de entorno WEBHOOK_SECRET en n8n');\n}\n\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { body, signature } }];"
+        "jsCode": "const crypto = require('crypto');\n\n// Cambia este array por tus imágenes reales.\n// Normalmente vendría de un nodo anterior: items.map(...)\nconst images = [\n  { url: 'https://picsum.photos/seed/uno/1920/1080', alt: 'Primera imagen' },\n  { url: 'https://picsum.photos/seed/dos/1920/1080', alt: 'Segunda imagen' },\n];\n\n// Serializa UNA sola vez. Este string exacto es el que se firma y se envía.\nconst body = JSON.stringify({ images, mode: 'append' });\n\nconst secret = $vars.WEBHOOK_SECRET;\nif (!secret) {\n  throw new Error('Falta la Variable WEBHOOK_SECRET en n8n');\n}\n\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { body, signature } }];"
       },
       "id": "22222222-2222-2222-2222-222222222222",
       "name": "Firmar payload",
@@ -23,7 +23,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://TU-APP.vercel.app/api/webhook",
+        "url": "https://carrusel.etziel.com/api/webhook/USER1",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

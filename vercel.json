@@ -28,7 +28,10 @@
     }
   ],
   "rewrites": [
+    { "source": "/", "destination": "/admin.html" },
     { "source": "/admin", "destination": "/admin.html" },
-    { "source": "/admin/", "destination": "/admin.html" }
+    { "source": "/admin/", "destination": "/admin.html" },
+    { "source": "/carrusel/:userId", "destination": "/index.html" },
+    { "source": "/carrusel/:userId/", "destination": "/index.html" }
   ]
 }

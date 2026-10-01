@@ -5,15 +5,23 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { getJson as redisGet, setJson as redisSet } from './_redis.js';
+import { getJson as redisGet, setJson as redisSet, delKey as redisDel } from './_redis.js';
+import { unlink } from 'node:fs/promises';
 import { put } from '@vercel/blob';
 
 const LOCAL = process.env.LOCAL_STORAGE === '1';
+// Image files can live on local disk even when data is in Redis (Docker: Redis + ./.data volume).
+// On Vercel leave IMAGE_STORAGE unset so images go to Vercel Blob.
+const LOCAL_IMAGES = LOCAL || (process.env.IMAGE_STORAGE || '').toLowerCase() === 'local';
 const DATA_DIR = process.env.LOCAL_DATA_DIR || join(process.cwd(), '.data');
 const BLOB_ACCESS = (process.env.BLOB_ACCESS || 'public').toLowerCase() === 'private' ? 'private' : 'public';
 
 export function isLocal() {
   return LOCAL;
+}
+
+export function isLocalImages() {
+  return LOCAL_IMAGES;
 }
 
 function safeKey(key) {
@@ -40,21 +48,27 @@ export async function setJson(key, value) {
   return true;
 }
 
+export async function delKey(key) {
+  if (!LOCAL) return redisDel(key);
+  try {
+    await unlink(join(DATA_DIR, 'kv', safeKey(key) + '.json'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ==================== Image hosting (Vercel Blob or local disk) ====================
 
 export async function putImage(fileName, buffer, contentType, request) {
-  if (LOCAL) {
+  if (LOCAL_IMAGES) {
     const file = join(DATA_DIR, 'uploads', fileName);
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, buffer);
-    let origin = '';
-    try {
-      origin = new URL(request.url).origin;
-    } catch {
-      origin = '';
-    }
+    // URL relativa: funciona con cualquier dominio (el interno puede ser
+    // http://localhost:8080 y romper la imagen en el navegador).
     return {
-      url: `${origin}/uploads/${fileName}`,
+      url: `/uploads/${fileName}`,
       pathname: `uploads/${fileName}`,
       contentType,
     };

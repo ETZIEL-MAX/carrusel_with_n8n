@@ -2,15 +2,43 @@ import {
   getImages, addImage, updateImage, deleteImage, reorderImages,
   validateImageData, validateImagePatch,
   verifyToken, getTokenFromCookie, checkRateLimit,
-  jsonResponse, errorResponse, successResponse
+  jsonResponse, errorResponse, successResponse,
+  isSuperAdmin, isUser
 } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
-// GET /api/images - Public endpoint, no auth required
+async function requireAuth(request) {
+  const token = getTokenFromCookie(request);
+  if (!token) return errorResponse('Unauthorized', 401);
+  const payload = await verifyToken(token);
+  if (!payload || (!isSuperAdmin(payload) && !isUser(payload))) return errorResponse('Forbidden', 403);
+  return { payload };
+}
+
+function getUserIdFromRequest(request, payload) {
+  if (isSuperAdmin(payload)) {
+    const url = new URL(request.url);
+    const userId = url.searchParams.get('userId');
+    if (!userId) return errorResponse('userId required for super-admin', 400);
+    return userId.toUpperCase();
+  }
+  if (isUser(payload)) {
+    return payload.userId;
+  }
+  return errorResponse('Unable to determine userId', 400);
+}
+
+// GET /api/images - Admin scoped by userId (query param for super-admin, session for user)
 export async function GET(request) {
+  const auth = await requireAuth(request);
+  if (auth instanceof Response) return auth;
+  
+  const userId = await getUserIdFromRequest(request, auth.payload);
+  if (userId instanceof Response) return userId;
+  
   const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`images:get:${clientIp}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`images:get:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429, { 
@@ -19,34 +47,27 @@ export async function GET(request) {
   }
   
   try {
-    const images = await getImages();
-    return jsonResponse({ images }, 200, {
-      'Cache-Control': 'public, max-age=30, stale-while-revalidate=60',
-    });
+    const images = await getImages(userId);
+    return successResponse({ images }, 'Images retrieved');
   } catch (err) {
     console.error('GET /api/images error:', err);
     return errorResponse('Failed to fetch images', 500);
   }
 }
 
-// POST /api/images - Admin only
+// POST /api/images - Admin only (scoped by userId)
 export async function POST(request) {
+  const auth = await requireAuth(request);
+  if (auth instanceof Response) return auth;
+  
+  const userId = await getUserIdFromRequest(request, auth.payload);
+  if (userId instanceof Response) return userId;
+  
   const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`images:post:${clientIp}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`images:post:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429);
-  }
-  
-  // Verify admin auth
-  const token = getTokenFromCookie(request);
-  if (!token) {
-    return errorResponse('Unauthorized', 401);
-  }
-  
-  const payload = await verifyToken(token);
-  if (!payload || payload.role !== 'admin') {
-    return errorResponse('Forbidden', 403);
   }
   
   try {
@@ -56,7 +77,7 @@ export async function POST(request) {
       return errorResponse('Validation failed', 400, errors);
     }
     
-    const image = await addImage(body);
+    const image = await addImage(userId, body);
     return successResponse(image, 'Image added successfully');
   } catch (err) {
     console.error('POST /api/images error:', err);
@@ -67,23 +88,19 @@ export async function POST(request) {
   }
 }
 
-// PATCH /api/images - Admin only (update or reorder)
+// PATCH /api/images - Admin only (update or reorder, scoped by userId)
 export async function PATCH(request) {
+  const auth = await requireAuth(request);
+  if (auth instanceof Response) return auth;
+  
+  const userId = await getUserIdFromRequest(request, auth.payload);
+  if (userId instanceof Response) return userId;
+  
   const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`images:patch:${clientIp}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`images:patch:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429);
-  }
-  
-  const token = getTokenFromCookie(request);
-  if (!token) {
-    return errorResponse('Unauthorized', 401);
-  }
-  
-  const payload = await verifyToken(token);
-  if (!payload || payload.role !== 'admin') {
-    return errorResponse('Forbidden', 403);
   }
   
   try {
@@ -91,7 +108,7 @@ export async function PATCH(request) {
     
     // Check if it's a reorder request
     if (Array.isArray(body) && body.every(item => item.id && typeof item.order === 'number')) {
-      const images = await reorderImages(body);
+      const images = await reorderImages(userId, body);
       return successResponse(images, 'Images reordered successfully');
     }
     
@@ -106,7 +123,7 @@ export async function PATCH(request) {
       return errorResponse('Validation failed', 400, errors);
     }
     
-    const image = await updateImage(id, updates);
+    const image = await updateImage(userId, id, updates);
     if (!image) {
       return errorResponse('Image not found', 404);
     }
@@ -121,23 +138,19 @@ export async function PATCH(request) {
   }
 }
 
-// DELETE /api/images?id=:id - Admin only
+// DELETE /api/images?id=:id - Admin only (scoped by userId)
 export async function DELETE(request) {
+  const auth = await requireAuth(request);
+  if (auth instanceof Response) return auth;
+  
+  const userId = await getUserIdFromRequest(request, auth.payload);
+  if (userId instanceof Response) return userId;
+  
   const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`images:delete:${clientIp}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`images:delete:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429);
-  }
-  
-  const token = getTokenFromCookie(request);
-  if (!token) {
-    return errorResponse('Unauthorized', 401);
-  }
-  
-  const payload = await verifyToken(token);
-  if (!payload || payload.role !== 'admin') {
-    return errorResponse('Forbidden', 403);
   }
   
   const url = new URL(request.url);
@@ -148,7 +161,7 @@ export async function DELETE(request) {
   }
   
   try {
-    const deleted = await deleteImage(id);
+    const deleted = await deleteImage(userId, id);
     if (!deleted) {
       return errorResponse('Image not found', 404);
     }
@@ -160,7 +173,6 @@ export async function DELETE(request) {
   }
 }
 
-// OPTIONS for CORS preflight
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
@@ -168,6 +180,7 @@ export async function OPTIONS() {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Max-Age': '86400',
     },
   });

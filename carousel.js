@@ -1,5 +1,5 @@
 (() => {
-  const AUTOPLAY_MS = 5000;
+  const AUTOPLAY_MS = 8000;
   const POLL_MS = 10000;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -16,11 +16,21 @@
   let progressStart = 0;
   let paused = false;
   let currentId = null;
+  let userId = null;
 
-  function escapeHtml(str) {
-    return String(str || '').replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
+function escapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, (c) => ({
+    '&': '&',
+    '<': '<',
+    '>': '>',
+    '"': '"',
+    "'": "'",
+  }[c]));
+}
+
+  function getUserIdFromPath() {
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    return parts[0] === 'carrusel' ? parts[1]?.toUpperCase() : null;
   }
 
   function build() {
@@ -35,19 +45,17 @@
     emptyEl.hidden = true;
 
     slidesEl.innerHTML = images
-      .map((img, i) => {
-        const caption = img.alt
-          ? `<div class="slide-caption">
-               <span class="slide-index">${String(i + 1).padStart(2, '0')} / ${String(images.length).padStart(2, '0')}</span>
-               <h2 class="slide-title">${escapeHtml(img.alt)}</h2>
-             </div>`
-          : '';
-        return `<div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
-            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="${i === 0 ? 'eager' : 'lazy'}" decoding="async" draggable="false" />
-            ${caption}
-          </div>`;
-      })
+      .map((img, i) => `
+        <div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
+          <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="${i === 0 ? 'eager' : 'lazy'}" decoding="async" draggable="false" />
+        </div>`)
       .join('');
+
+    // Fondo difuminado por diapositiva (se asigna por DOM para no inyectar HTML).
+    slidesEl.querySelectorAll('.slide').forEach((el, i) => {
+      const url = images[i]?.url;
+      if (url) el.style.setProperty('--bg', `url("${String(url).replace(/"/g, '%22')}")`);
+    });
 
     dotsEl.innerHTML = images
       .map((_, i) => `<button class="dot" data-index="${i}" role="tab" aria-label="Diapositiva ${i + 1}"></button>`)
@@ -125,9 +133,6 @@
 
   // ==================== Events ====================
 
-  document.getElementById('nextBtn').addEventListener('click', () => { next(); startAutoplay(); });
-  document.getElementById('prevBtn').addEventListener('click', () => { prev(); startAutoplay(); });
-
   dotsEl.addEventListener('click', (e) => {
     const dot = e.target.closest('.dot');
     if (!dot) return;
@@ -139,13 +144,7 @@
     if (e.key === 'ArrowRight') { next(); startAutoplay(); }
     else if (e.key === 'ArrowLeft') { prev(); startAutoplay(); }
     else if (e.key === ' ') { e.preventDefault(); paused ? resume() : pause(); }
-  });
-
-  // Pausar solo al pasar sobre los controles, no en toda la pantalla
-  // (el carrusel es full-screen: un hover global detendría el autoplay siempre).
-  document.querySelectorAll('.nav-arrow, .dots').forEach((el) => {
-    el.addEventListener('mouseenter', pause);
-    el.addEventListener('mouseleave', resume);
+    else if (e.key === 'Tab') { /* allow tab navigation for focus management */ }
   });
 
   // Touch / swipe
@@ -182,10 +181,12 @@
 
   async function refresh() {
     try {
-      const res = await fetch('/api/images', { cache: 'no-store' });
+      if (!userId) return;
+      const res = await fetch(`/api/carrusel?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
       if (!res.ok) throw new Error('fetch failed');
       const data = await res.json();
-      const incoming = Array.isArray(data.images) ? data.images : [];
+      const list = data?.data?.images ?? data?.images;
+      const incoming = Array.isArray(list) ? list : [];
       const signature = JSON.stringify(incoming.map((i) => [i.id, i.url, i.alt, i.order]));
       if (signature !== refresh._sig) {
         refresh._sig = signature;
@@ -197,6 +198,13 @@
     }
   }
 
-  refresh();
-  setInterval(() => { if (!paused) refresh(); }, POLL_MS);
+  // Initialize
+  userId = getUserIdFromPath();
+  if (!userId) {
+    emptyEl.hidden = false;
+    emptyEl.innerHTML = '<h1>ID de usuario requerido</h1><p>Accede desde <code>/carrusel/USER1</code></p>';
+  } else {
+    refresh();
+    setInterval(() => { if (!paused) refresh(); }, POLL_MS);
+  }
 })();

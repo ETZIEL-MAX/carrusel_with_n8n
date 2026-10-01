@@ -15,58 +15,242 @@
 </head>
 <body class="admin">
   <!-- Login -->
-  <section class="login-view" id="loginView">
-    <form class="login-card" id="loginForm">
-      <div>
+<section class="login-view" id="loginView">
+    <div class="login-card">
+      <div class="login-header">
         <h1>Panel de control</h1>
-        <p>Introduce la contraseña de administrador para gestionar el carrusel.</p>
+        <p>Elige cómo acceder:</p>
       </div>
-      <div class="field">
-        <label for="password">Contraseña</label>
-        <input type="password" id="password" autocomplete="current-password" required />
+      
+      <div class="login-tabs" role="tablist">
+        <button class="login-tab is-active" role="tab" data-mode="admin" aria-selected="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Super-Admin
+        </button>
+        <button class="login-tab" role="tab" data-mode="user" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Usuario
+        </button>
       </div>
-      <p class="error-text" id="loginError"></p>
-      <button class="btn btn--primary" type="submit" id="loginBtn">Entrar</button>
-    </form>
-  </section>
-
-  <!-- Dashboard -->
-  <section class="admin-shell" id="dashboard" hidden>
-    <header class="admin-header">
-      <div>
-        <h1 class="admin-title">Carrusel <span>admin</span></h1>
-        <p class="hint" id="countHint">0 imágenes</p>
+ 
+      <div class="login-panels">
+        <!-- Super-Admin Panel -->
+        <div class="login-panel is-active" id="panelAdmin">
+          <form id="adminLoginForm">
+            <div class="field">
+              <label for="adminPassword">Contraseña de admin</label>
+              <input type="password" id="adminPassword" name="adminPassword" autocomplete="current-password" required />
+            </div>
+            <p class="error-text" id="adminLoginError"></p>
+            <button class="btn btn--primary" type="submit" id="adminLoginBtn">Entrar como Super-Admin</button>
+          </form>
+        </div>
+ 
+        <!-- User Panel -->
+        <div class="login-panel" id="panelUser">
+          <form id="userLoginForm">
+            <div class="field">
+              <label for="userEmail">Correo electrónico</label>
+              <input type="email" id="userEmail" name="userEmail" placeholder="usuario@ejemplo.com" autocomplete="username" required />
+            </div>
+            <div class="field">
+              <label for="userPassword">Contraseña</label>
+              <input type="password" id="userPassword" name="userPassword" autocomplete="current-password" required />
+            </div>
+            <p class="error-text" id="userLoginError"></p>
+            <button class="btn btn--primary" type="submit" id="userLoginBtn">Entrar como Usuario</button>
+          </form>
+        </div>
       </div>
-      <div class="admin-actions">
-        <a class="btn" href="/" target="_blank" rel="noopener">Ver sitio</a>
-        <button class="btn btn--primary" id="addBtn">+ Añadir imagen</button>
-        <button class="btn btn--danger" id="logoutBtn">Salir</button>
-      </div>
-    </header>
-
-    <div id="grid" class="image-grid"></div>
-    <div id="gridEmpty" class="empty" hidden style="position:static; min-height:40vh;">
-      <h2 class="empty__title">No hay imágenes todavía</h2>
-      <p class="empty__text">Añade tu primera imagen o sincroniza desde n8n.</p>
     </div>
   </section>
 
-  <!-- Modal: add / edit -->
-  <div class="modal-backdrop" id="modalBackdrop">
-    <form class="modal" id="imageForm">
-      <h2 id="modalTitle">Añadir imagen</h2>
+  <!-- Super-Admin Dashboard -->
+  <section class="admin-shell" id="superAdminDashboard" hidden>
+    <header class="admin-header">
+      <div>
+        <h1 class="admin-title">Super-Admin <span>cuentas</span></h1>
+        <p class="hint" id="superAdminCount">0 usuarios</p>
+      </div>
+      <div class="admin-actions">
+        <button class="btn btn--primary" id="addUserBtn">+ Nuevo usuario</button>
+        <button class="btn btn--danger" id="superAdminLogoutBtn">Salir</button>
+      </div>
+    </header>
+
+    <div id="superAdminGrid" class="image-grid"></div>
+    <div id="superAdminEmpty" class="empty" hidden style="position:static; min-height:40vh;">
+      <h2 class="empty__title">No hay usuarios todavía</h2>
+      <p class="empty__text">Crea el primer usuario para empezar.</p>
+    </div>
+  </section>
+
+  <!-- User Dashboard (image management) -->
+  <section class="admin-shell" id="userDashboard" hidden>
+    <header class="admin-header">
+      <div>
+        <h1 class="admin-title">Carrusel <span id="userDashboardTitle">USER1</span></h1>
+        <p class="hint" id="userCountHint">0 imágenes</p>
+      </div>
+      <div class="admin-actions">
+        <button class="btn" id="backToUsersBtn" hidden>← Volver a usuarios</button>
+        <button class="btn" id="userSettingsBtn" hidden>⚙ Configuración</button>
+        <a class="btn" id="userPublicLink" href="/carrusel/USER1" target="_blank" rel="noopener">Ver carrusel público</a>
+        <button class="btn btn--primary" id="uploadImgBtn">⬆ Subir imágenes</button>
+        <input type="file" id="uploadImgInput" accept="image/*" multiple hidden />
+        <button class="btn" id="addImgBtn">+ Añadir por URL</button>
+        <button class="btn btn--danger" id="userLogoutBtn">Salir</button>
+      </div>
+    </header>
+
+    <div class="upload-status" id="uploadStatus" hidden>
+      <div class="upload-status__text" id="uploadStatusText">Subiendo…</div>
+      <div class="upload-status__bar"><div class="upload-status__fill" id="uploadStatusFill"></div></div>
+    </div>
+
+    <div id="userGrid" class="image-grid"></div>
+    <div id="userGridEmpty" class="empty" hidden style="position:static; min-height:40vh;">
+      <h2 class="empty__title">No hay imágenes todavía</h2>
+      <p class="empty__text">Pulsa «Subir imágenes» para elegirlas desde tu PC o móvil, o arrástralas aquí.</p>
+    </div>
+  </section>
+
+  <!-- Modal: add / edit user (super-admin) -->
+  <div class="modal-backdrop" id="userModalBackdrop">
+    <form class="modal" id="userModalForm">
+      <h2 id="userModalTitle">Nuevo usuario</h2>
+      <div class="field">
+        <label for="newUserName">Nombre</label>
+        <input type="text" id="newUserName" name="newUserName" placeholder="Nombre del usuario" autocomplete="off" required maxlength="120" />
+      </div>
+      <div class="field">
+        <label for="newUserEmail">Correo electrónico</label>
+        <input type="email" id="newUserEmail" name="newUserEmail" placeholder="usuario@ejemplo.com" autocomplete="off" required />
+      </div>
+      <div class="field" id="newUserPasswordField">
+        <label for="newUserPassword">Contraseña (mín. 6 caracteres)</label>
+        <div style="display:flex; gap:.4rem;">
+          <input type="password" id="newUserPassword" name="newUserPassword" autocomplete="new-password" required minlength="6" style="flex:1;" />
+          <button class="btn" type="button" id="newUserPwdToggle" title="Mostrar / ocultar" aria-label="Mostrar u ocultar contraseña">👁</button>
+          <button class="btn" type="button" id="newUserPwdGen" title="Generar contraseña segura">🎲</button>
+        </div>
+      </div>
+      <p class="error-text" id="userFormError"></p>
+      <div class="modal__foot">
+        <button class="btn" type="button" id="userCancelBtn">Cancelar</button>
+        <button class="btn btn--primary" type="submit" id="userSaveBtn">Crear usuario</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Modal: password shown once (super-admin) -->
+  <div class="modal-backdrop" id="pwdRevealBackdrop">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 id="pwdRevealTitle">Contraseña de usuario</h2>
+      <p class="hint">Guárdala ahora: no se podrá volver a ver.</p>
+      <div class="field">
+        <label for="pwdRevealText">Contraseña</label>
+        <div style="display:flex; gap:.4rem;">
+          <input type="text" id="pwdRevealText" readonly style="flex:1; font-family: var(--font-mono);" />
+          <button class="btn btn--primary" type="button" id="pwdRevealCopyBtn">Copiar</button>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <button class="btn btn--primary" type="button" id="pwdRevealCloseBtn">Entendido</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: user settings — account + n8n webhook (super-admin) -->
+  <div class="modal-backdrop" id="settingsModalBackdrop">
+    <form class="modal modal--wide" id="settingsModalForm">
+      <h2 id="settingsModalTitle">Ajustes de usuario</h2>
+
+      <h3 class="modal__section" id="accountSection">Cuenta</h3>
+      <div class="field">
+        <label for="setName">Nombre</label>
+        <input type="text" id="setName" name="setName" autocomplete="off" required maxlength="120" />
+      </div>
+      <div class="field">
+        <label for="setEmail">Correo electrónico</label>
+        <input type="email" id="setEmail" name="setEmail" autocomplete="off" required />
+      </div>
+      <div class="field">
+        <label for="setPassword">Nueva contraseña (opcional, mín. 6)</label>
+        <div style="display:flex; gap:.4rem;">
+          <input type="password" id="setPassword" name="setPassword" autocomplete="new-password" minlength="6" placeholder="Déjala vacía para no cambiarla" style="flex:1;" />
+          <button class="btn" type="button" id="setPwdToggle" title="Mostrar / ocultar" aria-label="Mostrar u ocultar contraseña">👁</button>
+          <button class="btn" type="button" id="setPwdGen" title="Generar contraseña segura">🎲</button>
+        </div>
+      </div>
+      <p class="error-text" id="settingsFormError"></p>
+
+      <div id="webhookDocs">
+        <h3 class="modal__section">Webhook n8n</h3>
+        <p class="hint">Este carrusel tiene su <strong>propio</strong> webhook. n8n envía las imágenes a esta URL y se <strong>agregan</strong> al carrusel sin borrar las existentes.</p>
+        <div class="field">
+          <label>URL del webhook (POST)</label>
+          <div class="copy-row"><code class="copy-code" id="whUrl"></code><button class="btn" type="button" data-copy="whUrl">Copiar</button></div>
+        </div>
+        <div class="field">
+          <label>Cabeceras</label>
+          <div class="copy-row"><code class="copy-code" id="whHeaders"></code><button class="btn" type="button" data-copy="whHeaders">Copiar</button></div>
+        </div>
+        <div class="field">
+          <label>Cuerpo (JSON)</label>
+          <div class="copy-row"><pre class="copy-code" id="whBody"></pre><button class="btn" type="button" data-copy="whBody">Copiar</button></div>
+        </div>
+        <div class="field">
+          <label>Re-hospedar imagen temporal (POST, misma firma)</label>
+          <div class="copy-row"><code class="copy-code" id="whUpload"></code><button class="btn" type="button" data-copy="whUpload">Copiar</button></div>
+        </div>
+        <p class="hint">La firma <code>X-Webhook-Secret</code> es el HMAC-SHA256 (hex) del cuerpo exacto, usando la variable <code>WEBHOOK_SECRET</code> del servidor. Por seguridad su valor no se muestra aquí; configura la misma en n8n (ver <code>docs/N8N.md</code>).</p>
+
+        <h3 class="modal__section">Copiar para n8n</h3>
+        <p class="hint">Pega este bloque campo por campo en el nodo <strong>HTTP Request</strong> de n8n. El cuerpo ya trae las imágenes actuales de este carrusel y <code>"mode": "append"</code> (agregar sin borrar). Usa <code>"replace"</code> si quieres reemplazar todo.</p>
+        <div class="field">
+          <div class="copy-row"><pre class="copy-code copy-code--tall" id="n8nBlock"></pre><button class="btn btn--primary" type="button" data-copy="n8nBlock">Copiar bloque n8n</button></div>
+        </div>
+      </div>
+
+      <h3 class="modal__section" id="genSection">Generación</h3>
+      <div class="field">
+        <label for="genDriveUrl">Google Drive — URL de la carpeta</label>
+        <input type="url" id="genDriveUrl" name="genDriveUrl"
+               placeholder="https://drive.google.com/drive/folders/…" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label>Paleta de colores (máx. 5)</label>
+        <div class="color-palette" id="colorPaletteRow"></div>
+        <button class="btn" type="button" id="addColorBtn" style="margin-top:.4rem;">+ Color</button>
+      </div>
+      <p class="error-text" id="genFormError"></p>
+
+      <div class="modal__foot">
+        <button class="btn" type="button" id="settingsCancelBtn">Cerrar</button>
+        <button class="btn btn--generate" type="button" id="generateImagesBtn" hidden>⚡ Generar imágenes</button>
+        <button class="btn btn--primary" type="submit" id="settingsSaveGenBtn" hidden>Guardar configuración</button>
+        <button class="btn btn--primary" type="submit" id="settingsSaveBtn">Guardar cambios</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Modal: add / edit image (user) -->
+  <div class="modal-backdrop" id="imgModalBackdrop">
+    <form class="modal" id="imgModalForm">
+      <h2 id="imgModalTitle">Añadir imagen</h2>
       <div class="field">
         <label for="imgUrl">URL de la imagen</label>
-        <input type="url" id="imgUrl" placeholder="https://res.cloudinary.com/..." required />
+        <input type="url" id="imgUrl" name="imgUrl" placeholder="https://..." required />
       </div>
       <div class="field">
         <label for="imgAlt">Texto / título (opcional)</label>
         <textarea id="imgAlt" placeholder="Descripción que aparece sobre la imagen"></textarea>
       </div>
-      <p class="error-text" id="formError"></p>
+      <p class="error-text" id="imgFormError"></p>
       <div class="modal__foot">
-        <button class="btn" type="button" id="cancelBtn">Cancelar</button>
-        <button class="btn btn--primary" type="submit" id="saveBtn">Guardar</button>
+        <button class="btn" type="button" id="imgCancelBtn">Cancelar</button>
+        <button class="btn btn--primary" type="submit" id="imgSaveBtn">Guardar</button>
       </div>
     </form>
   </div>

@@ -43,10 +43,13 @@ for Redis (see git history for a full integration harness pattern).
   - `_utils.js` — JWT, HMAC verification, validation, rate limiting, image ops,
     response helpers.
   - `images.js` — public `GET`; admin-only `POST`/`PATCH`/`DELETE`.
-  - `webhook.js` — n8n endpoint, HMAC-authenticated, full replace.
-  - `upload.js` — HMAC-authenticated; downloads a temporary image URL and
-    re-hosts it (Vercel Blob, or `.data/uploads` locally). Hosts are
+  - `_webhook-shared.js` — shared logic for the per-carousel endpoints.
+  - `webhook/[userId].js` — per-carousel n8n webhook, HMAC-authenticated;
+    `mode: "append"` (default, dedupes URLs) or `mode: "replace"`.
+  - `upload/[userId].js` — HMAC-authenticated; downloads a temporary image URL
+    and re-hosts it (Vercel Blob, or `.data/uploads` locally). Hosts are
     restricted by `UPLOAD_ALLOWED_HOSTS` to avoid SSRF (skipped when local).
+  - `webhook.js` / `upload.js` — retired global endpoints; respond `410 Gone`.
   - `health.js` — HMAC-protected diagnostics (env var presence, storage mode).
   - `auth.js` — login/logout/session check.
 
@@ -75,7 +78,7 @@ it is `.data/kv/carousel_images.json`; images are served from `/uploads/*`.
 1. The admin session cookie MUST remain `HttpOnly`, `Secure`, `SameSite=Strict`.
 2. `ADMIN_PASSWORD_HASH` is verified with Argon2id (`@node-rs/argon2`); never
    compare plaintext passwords.
-3. `/api/webhook` MUST verify the HMAC-SHA256 signature of the **raw body**
+3. `/api/webhook/USERx` MUST verify the HMAC-SHA256 signature of the **raw body**
    using `timingSafeEqual`. Never trust an unsigned payload.
 4. Mutating `/api/images` routes MUST verify the JWT cookie and `role === 'admin'`.
 5. Do not log or return secrets. Do not commit `.env`.
@@ -98,9 +101,11 @@ it is `.data/kv/carousel_images.json`; images are served from `/uploads/*`.
 api/_store.js   storage abstraction (Redis/Blob vs local files)
 api/_utils.js   JWT, HMAC, validation, rate limit, image CRUD, responses
 api/_redis.js   getJson / setJson against Upstash REST
+api/_webhook-shared.js  per-user webhook/upload logic
 api/images.js   GET (public) | POST/PATCH/DELETE (admin)
-api/webhook.js  POST (HMAC) — full replace
-api/upload.js   POST (HMAC) — re-host a temporary image URL (Blob or disk)
+api/webhook/[userId].js  POST (HMAC) — append (default) or replace
+api/upload/[userId].js   POST (HMAC) — re-host a temporary image URL (Blob or disk)
+api/webhook.js / api/upload.js  retired globals — 410 Gone
 api/health.js   POST (HMAC) — diagnostics
 api/auth.js     POST login | GET me | DELETE logout
 scripts/server.mjs  standalone local/Docker server

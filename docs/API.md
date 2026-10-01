@@ -136,14 +136,21 @@ curl -X DELETE "https://TU-APP.vercel.app/api/images?id=3f1c..." \
 
 ## Webhook (n8n)
 
-### `POST /api/webhook`
+Cada carrusel tiene su **propio** webhook: `POST /api/webhook/USERx`. El
+endpoint global antiguo (`/api/webhook`) sigue existiendo pero responde
+`410 Gone`.
 
-Reemplaza **todo** el carrusel. Autenticado por firma HMAC.
+### `POST /api/webhook/USER1`
+
+Autenticado por firma HMAC. Por defecto **agrega** imágenes al carrusel
+(`mode: "append"`); con `mode: "replace"` reemplaza todo el contenido.
 
 - **Auth**: header `X-Webhook-Secret` = HMAC-SHA256 (hex) del **cuerpo crudo**
   usando `WEBHOOK_SECRET`.
-- **Rate limit**: `RATE_LIMIT_WEBHOOK` (10/min por defecto).
+- **Rate limit**: `RATE_LIMIT_WEBHOOK` (10/min por defecto), por carrusel.
 - **Límites**: 1 a 100 imágenes por petición.
+- El `userId` sale de la URL. Debe existir ese carrusel (`404` si no). Si el
+  cuerpo incluye `userId`, debe coincidir con el de la URL (`400` si no).
 
 **Body**
 
@@ -152,38 +159,44 @@ Reemplaza **todo** el carrusel. Autenticado por firma HMAC.
   "images": [
     { "url": "https://cdn.ejemplo.com/1.jpg", "alt": "Primera" },
     { "url": "https://cdn.ejemplo.com/2.jpg", "alt": "Segunda" }
-  ]
+  ],
+  "mode": "append"
 }
 ```
 
-Cada elemento admite también `id`, `order` y `createdAt` opcionales; si no se
-envían, se generan automáticamente.
+- `mode`: `"append"` (por defecto) agrega sin borrar; `"replace"` reemplaza todo.
+- En modo append, las URLs que ya están en el carrusel se **omiten**.
+- Cada elemento admite también `id` y `order` opcionales.
 
-**Respuesta 200**
+**Respuesta 200 (append)**
 
 ```json
 {
   "success": true,
-  "message": "Successfully replaced 2 images",
-  "data": { "count": 2, "images": [ ] }
+  "message": "Añadidas 2 imágenes a USER1",
+  "data": { "count": 2, "skipped": 0, "images": [ ], "userId": "USER1", "mode": "append" }
 }
 ```
+
+`count` = imágenes agregadas; `skipped` = URLs que ya existían.
 
 **Errores**
 
 | Código | Motivo |
 |---|---|
-| `400` | JSON inválido, `images` ausente/vacío, > 100 imágenes, o validación fallida. |
+| `400` | `userId` de la URL inválido, JSON inválido, `images` ausente/vacío, > 100 imágenes, `mode` inválido, `userId` del cuerpo ≠ URL, o validación fallida. |
 | `401` | Falta la firma o no coincide. |
+| `404` | El carrusel `USERx` no existe. |
+| `410` | Se usó el endpoint global retirado `/api/webhook`. |
 | `429` | Rate limit excedido. |
 
 **Ejemplo con firma**
 
 ```bash
-BODY='{"images":[{"url":"https://cdn.ejemplo.com/1.jpg","alt":"Una"}]}'
+BODY='{"images":[{"url":"https://cdn.ejemplo.com/1.jpg","alt":"Una"}],"mode":"append"}'
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
 
-curl -X POST https://TU-APP.vercel.app/api/webhook \
+curl -X POST https://carrusel.etziel.com/api/webhook/USER1 \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Secret: $SIG" \
   -d "$BODY"
@@ -196,37 +209,55 @@ curl -X POST https://TU-APP.vercel.app/api/webhook \
 
 ## Upload (re-hospedaje de imágenes)
 
-### `POST /api/upload`
+### `POST /api/upload/USER1`
 
 Descarga una imagen desde una URL **temporal** y la re-hospeda de forma
-**permanente en Vercel Blob**, devolviendo la nueva URL. Pensado para que n8n
-convierta la URL efímera de un generador de imágenes (p. ej. Alibaba/Qwen, que
-caduca en ~24 h) en una URL estable para el carrusel.
+**permanente** (Vercel Blob en la nube, disco en Docker/local), devolviendo la
+nueva URL. Pensado para que n8n convierta la URL efímera de un generador de
+imágenes (p. ej. Alibaba/Qwen, que caduca en ~24 h) en una URL estable.
+
+El `userId` sale de la URL y debe existir. El endpoint global antiguo
+(`/api/upload`) responde `410 Gone`.
 
 - **Auth**: header `X-Webhook-Secret` = HMAC-SHA256 (hex) del **cuerpo crudo**, con `WEBHOOK_SECRET`.
-- **Rate limit**: `RATE_LIMIT_WEBHOOK` (10/min por defecto).
+- **Rate limit**: `RATE_LIMIT_WEBHOOK` (10/min por defecto), por carrusel.
 - **Límites**: 15 MB por defecto (`UPLOAD_MAX_BYTES`); timeout de descarga 20 s (`UPLOAD_FETCH_TIMEOUT`).
 
 **Body**
 
+Dos formas (firmadas igual con HMAC):
+
+1. **URL** (descarga y re-hospeda):
 ```json
 { "url": "https://dashscope-....aliyuncs.com/....png?Expires=...", "alt": "Título opcional" }
 ```
-
 `url` debe ser `http(s)` y su host debe estar en `UPLOAD_ALLOWED_HOSTS`
 (por defecto `aliyuncs.com,cloudinary.com,pollinations.ai`) para evitar SSRF.
 
+2. **Binario** (recomendado para n8n; evita SSRF y URLs temporales):
+```json
+{ "data": "<imagen en base64>", "contentType": "image/png", "alt": "" }
+```
+El servidor detecta el tipo real por los *magic bytes* y lo guarda.
+
+`alt` vacío = sin texto en el carrusel.
+
 **Respuesta 200**
+
+La `url` puede ser absoluta (Vercel Blob) o relativa a este dominio
+(`/uploads/...`) cuando el almacenamiento es local/disco. En ambos casos el
+navegador la carga correctamente.
 
 ```json
 {
   "success": true,
-  "message": "Image re-hosted permanently",
+  "message": "Image stored permanently",
   "data": {
-    "url": "https://xxxx.public.blob.vercel-storage.com/carousel/1712345678-1a2b3c4d.png",
-    "pathname": "carousel/1712345678-1a2b3c4d.png",
+    "url": "/uploads/1712345678-1a2b3c4d.png",
+    "pathname": "uploads/1712345678-1a2b3c4d.png",
     "contentType": "image/png",
-    "alt": "Título opcional"
+    "alt": "",
+    "userId": "USER1"
   }
 }
 ```
@@ -235,8 +266,10 @@ caduca en ~24 h) en una URL estable para el carrusel.
 
 | Código | Motivo |
 |---|---|
-| `400` | URL ausente/inválida, JSON inválido, host no permitido, o no es una imagen. |
+| `400` | URL ausente/inválida, JSON inválido, host no permitido, no es una imagen, o `userId` del cuerpo ≠ URL. |
 | `401` | Falta la firma o no coincide. |
+| `404` | El carrusel `USERx` no existe. |
+| `410` | Se usó el endpoint global retirado `/api/upload`. |
 | `413` | Imagen demasiado grande. |
 | `429` | Rate limit excedido. |
 | `500` | `BLOB_READ_WRITE_TOKEN` no configurado o fallo al subir. |
@@ -248,7 +281,7 @@ caduca en ~24 h) en una URL estable para el carrusel.
 BODY='{"url":"https://dashscope-....aliyuncs.com/x.png","alt":"Poster"}'
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
 
-curl -X POST https://TU-APP.vercel.app/api/upload \
+curl -X POST https://carrusel.etziel.com/api/upload/USER1 \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Secret: $SIG" \
   -d "$BODY"
@@ -295,15 +328,22 @@ curl -X POST https://TU-APP.vercel.app/api/health \
 
 ### `POST /api/auth`
 
-Login. Valida la contraseña contra `ADMIN_PASSWORD_HASH` (Argon2id).
+Login. Dos modos:
 
-- **Body**: `{ "password": "..." }`
+- **Super-admin**: `{ "password": "..." }`. Valida contra `ADMIN_PASSWORD_HASH` (Argon2id).
+- **Usuario**: `{ "email": "usuario@ejemplo.com", "password": "..." }`. El correo es insensible a mayúsculas.
+
 - **Éxito 200**: establece la cookie `auth_token` (HttpOnly, Secure, SameSite=Strict).
 
 ```bash
 curl -X POST https://TU-APP.vercel.app/api/auth \
   -H "Content-Type: application/json" \
   -d '{"password":"tu-contraseña"}' \
+  -c cookies.txt
+
+curl -X POST https://TU-APP.vercel.app/api/auth \
+  -H "Content-Type: application/json" \
+  -d '{"email":"usuario@ejemplo.com","password":"..."}' \
   -c cookies.txt
 ```
 
@@ -319,7 +359,46 @@ Comprueba la sesión actual.
 { "authenticated": true, "role": "admin" }
 ```
 
-Si no hay sesión válida: `{ "authenticated": false }`.
+Si el rol es `user`, incluye además `userId`, `name` y `email`. Si no hay sesión válida: `{ "authenticated": false }`.
+
+---
+
+## Subida manual de imágenes (panel)
+
+### `POST /api/images-upload[?userId=USER2]`
+
+Sube una imagen desde el PC o el móvil y la añade al final del carrusel.
+
+- **Auth**: cookie de sesión. Un usuario sube a su propio carrusel (si pasa otro `userId` → `403`). El super-admin debe indicar `?userId=`.
+- **Body**: `multipart/form-data` con `file` (JPEG, PNG, WebP o GIF; el tipo se comprueba por el contenido real del archivo) y `alt` opcional.
+- **Límite**: 4 MB por archivo (`MANUAL_UPLOAD_MAX_BYTES`). El panel reduce las fotos a 1920 px antes de enviarlas, así que las fotos de móvil quedan muy por debajo.
+- **Almacenamiento**: Vercel Blob (debe ser **público**) o `.data/uploads` en local/Docker.
+
+**Errores**: `400` sin archivo / no es imagen / falta `userId` (super-admin), `401` sin sesión, `403` carrusel ajeno, `404` usuario inexistente, `413` demasiado grande, `429` límite de peticiones.
+
+---
+
+## Usuarios (solo super-admin)
+
+### `GET /api/users`
+
+Lista usuarios con `userId`, `name`, `email`, fechas, `imageCount` y hasta 3 URLs de vista previa (`preview`). Nunca incluye hashes de contraseña.
+
+### `POST /api/users`
+
+Crea un usuario. Body: `{ "name", "email", "password" }` (contraseña mín. 6 caracteres). El correo debe ser único (409 si ya existe). Devuelve la contraseña **una sola vez**; no se puede volver a consultar.
+
+### `PATCH /api/users?userId=USER2`
+
+Actualiza `name` y/o `email` del usuario.
+
+### `PATCH /api/users/password?userId=USER2`
+
+Cambia la contraseña. Body: `{ "password" }`. Devuelve la contraseña una sola vez.
+
+### `DELETE /api/users?userId=USER2`
+
+Elimina el usuario y todo su carrusel. Requiere confirmación en el panel.
 
 ---
 
