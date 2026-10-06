@@ -9,9 +9,9 @@ import { randomUUID } from 'crypto';
 import {
   appendImages, replaceAllImages, validateImageData, userExists,
   verifyWebhookSignature, isHttpUrl, sniffImageType,
-  checkRateLimit, errorResponse, successResponse, getGenerationSettings,
+  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat,
 } from './_utils.js';
-import { putImage, isLocal, isLocalImages } from './_store.js';
+import { putImage, isLocal, isLocalImages, optimizeImage } from './_store.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_WEBHOOK || '10', 10);
 const MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES || String(15 * 1024 * 1024), 10);
@@ -23,7 +23,6 @@ const ALLOWED_HOSTS = (process.env.UPLOAD_ALLOWED_HOSTS || 'aliyuncs.com,cloudin
   .filter(Boolean);
 
 export const CORS_OPTIONS = {
-  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-Webhook-Secret',
   'Access-Control-Max-Age': '86400',
@@ -51,14 +50,6 @@ function isHostAllowed(url) {
   } catch {
     return false;
   }
-}
-
-function extensionFor(contentType) {
-  if (contentType.includes('png')) return 'png';
-  if (contentType.includes('jpeg') || contentType.includes('jpg')) return 'jpg';
-  if (contentType.includes('webp')) return 'webp';
-  if (contentType.includes('gif')) return 'gif';
-  return 'png';
 }
 
 // POST /api/webhook/:userId
@@ -189,6 +180,7 @@ export async function handleSettingsRead(request, rawUserId) {
       userId,
       googleDriveFolder: settings.googleDriveFolder || '',
       colorPalette: Array.isArray(settings.colorPalette) ? settings.colorPalette : [],
+      defaultOrientation: normalizeFormat(settings.defaultOrientation),
     },
     'Settings'
   );
@@ -263,8 +255,9 @@ export async function handleUpload(request, rawUserId) {
     }
 
     try {
-      const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${kind.ext}`;
-      const stored = await putImage(fileName, buffer, kind.type, request);
+      const opt = await optimizeImage(buffer, kind); // WebP de alta calidad
+      const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
+      const stored = await putImage(fileName, opt.buffer, opt.type, request);
       return successResponse(
         { url: stored.url, pathname: stored.pathname, contentType: kind.type, alt, userId },
         'Image stored permanently'
@@ -315,10 +308,16 @@ export async function handleUpload(request, rawUserId) {
       return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
     }
 
-    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${extensionFor(contentType)}`;
+    // No confiar en el content-type remoto: verificar que los bytes sean una imagen.
+    const kind = sniffImageType(buffer);
+    if (!kind) {
+      return errorResponse('El contenido descargado no es una imagen válida (JPEG, PNG, WebP o GIF)', 400);
+    }
+    const opt = await optimizeImage(buffer, kind);
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
 
     phase = 'upload';
-    const stored = await putImage(fileName, buffer, contentType.split(';')[0].trim(), request);
+    const stored = await putImage(fileName, opt.buffer, opt.type, request);
 
     return successResponse(
       { url: stored.url, pathname: stored.pathname, contentType: stored.contentType, alt, userId },

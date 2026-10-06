@@ -10,8 +10,8 @@ services:
       REDIS_URL: "redis://redis:6379"
       PORT: "8080"
       ADMIN_PASSWORD_HASH: "$$argon2id$$v=19$$m=19456,t=2,p=1$$Jh0XC1lAaTMwmkroh0rIZA$$ZbFZ7LNc6QJqk/hbVtOhv1V7rsORlWFOh7OOPKnubTk"
-      JWT_SECRET: "dev-jwt-secret-0123456789abcdef"
-      WEBHOOK_SECRET: "c8ae00faf94cca9533b99766bed6e72c2be09f758a40e8ac4d501e5dd135bc11"
+      JWT_SECRET: "${JWT_SECRET:?falta JWT_SECRET en .env}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET:?falta WEBHOOK_SECRET en .env}"
     volumes:
       - ./.data:/app/.data
     depends_on:

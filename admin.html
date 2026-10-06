@@ -163,7 +163,7 @@
 
   <!-- Modal: user settings — account + n8n webhook (super-admin) -->
   <div class="modal-backdrop" id="settingsModalBackdrop">
-    <form class="modal modal--wide" id="settingsModalForm">
+    <form class="modal modal--wide" id="settingsModalForm" novalidate>
       <h2 id="settingsModalTitle">Ajustes de usuario</h2>
 
       <h3 class="modal__section" id="accountSection">Cuenta</h3>
@@ -224,7 +224,19 @@
         <div class="color-palette" id="colorPaletteRow"></div>
         <button class="btn" type="button" id="addColorBtn" style="margin-top:.4rem;">+ Color</button>
       </div>
+      <div class="field">
+        <label>Formato por defecto (resolución)</label>
+        <div class="seg" id="orientSeg">
+          <button class="seg__btn" type="button" id="orientH" data-value="horizontal">▭ Horizontal 16:9 · 1920×1080</button>
+          <button class="seg__btn" type="button" id="orientV" data-value="vertical">▯ Vertical 9:16 · 1080×1920</button>
+          <button class="seg__btn" type="button" id="orientSq" data-value="cuadrado">◻ Cuadrado 1:1 · 1080×1080</button>
+          <button class="seg__btn" type="button" id="orientH43" data-value="horizontal43">▭ Horizontal 4:3 · 1440×1080</button>
+          <button class="seg__btn" type="button" id="orientV34" data-value="vertical34">▯ Vertical 3:4 · 1080×1440</button>
+        </div>
+        <p class="hint">El bot tomará como referencia esto si no es especificado en el mensaje de WhatsApp.</p>
+      </div>
       <p class="error-text" id="genFormError"></p>
+      <p class="ok-text" id="genFormOk" hidden></p>
 
       <div class="modal__foot">
         <button class="btn" type="button" id="settingsCancelBtn">Cerrar</button>
@@ -237,7 +249,7 @@
 
   <!-- Modal: add / edit image (user) -->
   <div class="modal-backdrop" id="imgModalBackdrop">
-    <form class="modal" id="imgModalForm">
+    <form class="modal" id="imgModalForm" novalidate>
       <h2 id="imgModalTitle">Añadir imagen</h2>
       <div class="field">
         <label for="imgUrl">URL de la imagen</label>
@@ -246,6 +258,16 @@
       <div class="field">
         <label for="imgAlt">Texto / título (opcional)</label>
         <textarea id="imgAlt" placeholder="Descripción que aparece sobre la imagen"></textarea>
+      </div>
+      <div class="field">
+        <label>Orientación en el carrusel</label>
+        <div class="seg seg--wrap" id="viewSeg">
+          <button class="seg__btn" type="button" data-value="auto">Auto</button>
+          <button class="seg__btn" type="button" data-value="horizontal">Horizontal</button>
+          <button class="seg__btn" type="button" data-value="vertical">Vertical</button>
+          <button class="seg__btn" type="button" data-value="rotate">↻ Girar 90°</button>
+        </div>
+        <p class="hint">Auto = se detecta sola. "Girar 90°" es para TV colocada en vertical.</p>
       </div>
       <p class="error-text" id="imgFormError"></p>
       <div class="modal__foot">

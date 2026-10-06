@@ -92,10 +92,15 @@
   const colorPaletteRow = document.getElementById('colorPaletteRow');
   const addColorBtn = document.getElementById('addColorBtn');
   const genFormError = document.getElementById('genFormError');
+  const genFormOk = document.getElementById('genFormOk');
   const generateImagesBtn = document.getElementById('generateImagesBtn');
   const settingsSaveGenBtn = document.getElementById('settingsSaveGenBtn');
+  const orientSeg = document.getElementById('orientSeg');
+  const viewSeg = document.getElementById('viewSeg');
 
   // ===== State =====
+  let genOrientation = 'horizontal'; // default de generación (settings)
+  let imgView = 'auto'; // orientación de la imagen en edición
   let session = null; // { role, userId, name, email }
   let superAdminUsers = [];
   let userImages = [];
@@ -126,13 +131,20 @@
 
 function escapeHtml(str) {
   return String(str || '').replace(/[&<>"']/g, (c) => ({
-    '&': '&',
-    '<': '<',
-    '>': '>',
-    '"': '"',
-    "'": "'",
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
   }[c]));
 }
+
+  const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
+  const normFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
+
+  function viewLabel(v) {
+    return { horizontal: '▭ Horizontal', vertical: '▯ Vertical', rotate: '↻ Girar 90°' }[v] || 'Auto';
+  }
 
   // ===== Auth =====
   async function checkAuth() {
@@ -451,7 +463,13 @@ function escapeHtml(str) {
     addColorBtn.hidden = colorSwatches.length >= 5;
   }
 
+  // Al editar la configuración se oculta el aviso de "guardado" para no confundir.
+  function clearGenOk() { if (genFormOk) genFormOk.hidden = true; }
+  genDriveUrl.addEventListener('input', clearGenOk);
+  addColorBtn.addEventListener('click', clearGenOk);
+
   colorPaletteRow.addEventListener('input', (e) => {
+    clearGenOk();
     const idx = parseInt(e.target.dataset.idx, 10);
     if (isNaN(idx)) return;
     const hex = e.target.value.trim();
@@ -466,6 +484,7 @@ function escapeHtml(str) {
   colorPaletteRow.addEventListener('click', (e) => {
     const btn = e.target.closest('.color-swatch__remove');
     if (!btn) return;
+    clearGenOk();
     const idx = parseInt(btn.dataset.idx, 10);
     if (!isNaN(idx)) {
       colorSwatches.splice(idx, 1);
@@ -478,6 +497,31 @@ function escapeHtml(str) {
     colorSwatches.push({ hex: '#e8b04b' });
     renderColorPalette();
   });
+
+  // ===== Controles segmentados (orientación) =====
+  function markSeg(segEl, value) {
+    if (!segEl) return;
+    segEl.querySelectorAll('.seg__btn').forEach((b) => {
+      b.classList.toggle('is-active', b.dataset.value === value);
+    });
+  }
+  if (orientSeg) {
+    orientSeg.addEventListener('click', (e) => {
+      const b = e.target.closest('.seg__btn');
+      if (!b) return;
+      genOrientation = normFormat(b.dataset.value);
+      markSeg(orientSeg, genOrientation);
+      clearGenOk();
+    });
+  }
+  if (viewSeg) {
+    viewSeg.addEventListener('click', (e) => {
+      const b = e.target.closest('.seg__btn');
+      if (!b) return;
+      imgView = b.dataset.value || 'auto';
+      markSeg(viewSeg, imgView);
+    });
+  }
 
   // ===== User Settings Button (regular user) =====
   userSettingsBtn.addEventListener('click', () => {
@@ -543,6 +587,10 @@ function escapeHtml(str) {
     genDriveUrl.value = '';
     colorSwatches = [];
     genFormError.textContent = '';
+    genFormOk.hidden = true;
+    genFormOk.textContent = '';
+    genOrientation = 'horizontal';
+    markSeg(orientSeg, genOrientation);
     renderColorPalette();
 
     settingsModalBackdrop.classList.add('is-open');
@@ -566,6 +614,8 @@ function escapeHtml(str) {
       const s = res?.data || {};
       genDriveUrl.value = s.googleDriveFolder || '';
       colorSwatches = Array.isArray(s.colorPalette) ? s.colorPalette.map((hex) => ({ hex })) : [];
+      genOrientation = normFormat(s.defaultOrientation);
+      markSeg(orientSeg, genOrientation);
       renderColorPalette();
     } catch { /* leave fields empty */ }
   }
@@ -576,6 +626,8 @@ function escapeHtml(str) {
     setPassword.value = '';
     colorSwatches = [];
     genFormError.textContent = '';
+    genFormOk.hidden = true;
+    genFormOk.textContent = '';
   }
 
   generateImagesBtn.addEventListener('click', async () => {
@@ -641,18 +693,27 @@ function escapeHtml(str) {
     const genPayload = {
       googleDriveFolder: genDriveUrl.value.trim() || null,
       colorPalette: palette.length ? palette : null,
+      defaultOrientation: genOrientation,
     };
 
     if (isSelfService) {
       genFormError.textContent = '';
+      genFormOk.hidden = true;
       settingsSaveGenBtn.disabled = true;
       settingsSaveGenBtn.textContent = 'Guardando…';
       try {
-        await API.updateSettings(null, genPayload);
+        const res = await API.updateSettings(null, genPayload);
+        // Reflejar lo que quedó guardado en el servidor (por si normaliza datos).
+        const saved = res?.data || genPayload;
+        genDriveUrl.value = saved.googleDriveFolder || '';
+        colorSwatches = Array.isArray(saved.colorPalette) ? saved.colorPalette.map((hex) => ({ hex })) : [];
+        renderColorPalette();
+        genFormOk.textContent = '✓ Guardado correctamente';
+        genFormOk.hidden = false;
         toast('Configuración guardada');
-        closeSettingsModal();
       } catch (err) {
-        genFormError.textContent = err.message;
+        genFormError.textContent = err.message || 'No se pudo guardar';
+        toast('No se pudo guardar la configuración', 'error');
       } finally {
         settingsSaveGenBtn.disabled = false;
         settingsSaveGenBtn.textContent = 'Guardar configuración';
@@ -726,7 +787,7 @@ function escapeHtml(str) {
           <div class="image-card__alt">${escapeHtml(img.alt || 'Sin título')}</div>
           <a class="image-card__url" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir: ${escapeHtml(img.url)}">${escapeHtml(img.url)}</a>
           <div class="image-card__foot">
-            <span class="image-card__order">#${img.order}</span>
+            <span class="image-card__order">#${img.order} · ${viewLabel(img.view)}</span>
             <div style="display:flex; gap:.4rem;">
               <button class="icon-btn" data-action="edit" data-id="${escapeHtml(img.id)}" aria-label="Editar">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -762,6 +823,8 @@ function escapeHtml(str) {
     imgModalTitle.textContent = image ? 'Editar imagen' : 'Añadir imagen';
     imgUrl.value = image ? image.url : '';
     imgAlt.value = image ? image.alt : '';
+    imgView = (image && image.view) ? image.view : 'auto';
+    markSeg(viewSeg, imgView);
     imgFormError.textContent = '';
     imgModalBackdrop.classList.add('is-open');
     setTimeout(() => imgUrl.focus(), 60);
@@ -780,7 +843,7 @@ function escapeHtml(str) {
   imgModalForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     imgFormError.textContent = '';
-    const payload = { url: imgUrl.value.trim(), alt: imgAlt.value.trim() };
+    const payload = { url: imgUrl.value.trim(), alt: imgAlt.value.trim(), view: imgView || 'auto' };
     if (!payload.url) { imgFormError.textContent = 'La URL es obligatoria'; return; }
     imgSaveBtn.disabled = true; imgSaveBtn.textContent = 'Guardando…';
     try {

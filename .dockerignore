@@ -13,3 +13,7 @@ test*.json
 !.env.example
 deploy
 docs
+tests
+playwright-report
+test-results
+playwright.config.js

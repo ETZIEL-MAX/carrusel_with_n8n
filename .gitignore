@@ -17,3 +17,7 @@ _test.mjs
 _itest.mjs
 
 
+
+# Playwright
+playwright-report/
+test-results/

@@ -1,6 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
-import { getJson, setJson, delKey } from './_store.js';
+import { getJson, setJson, delKey, deleteImageFile } from './_store.js';
 
 const DEFAULT_IMAGES = [];
 
@@ -197,14 +197,34 @@ export async function deleteUser(userId) {
   if (!users[id]) return false;
   delete users[id];
   await saveUsers(users);
+  // Borrar los archivos de las imágenes del usuario antes de quitar su lista.
+  try {
+    const imgs = await getImages(id);
+    for (const im of imgs) {
+      if (im && im.url) await deleteImageFile(im).catch(() => {});
+    }
+  } catch { /* no fatal */ }
   await delKey(imagesKey(id));
   return true;
 }
 
+// Hash argon2 de relleno: si el correo no existe se verifica contra él igual, para que
+// la respuesta tarde lo mismo y no se pueda saber por tiempo qué correos existen.
+let dummyHashPromise = null;
+function getDummyHash() {
+  if (!dummyHashPromise) {
+    dummyHashPromise = import('@node-rs/argon2').then(({ hash }) => hash('dummy-password-not-used'));
+  }
+  return dummyHashPromise;
+}
+
 export async function verifyUserLogin(email, password) {
   const found = await findUserByEmail(email);
-  if (!found) return null;
   const { verify } = await import('@node-rs/argon2');
+  if (!found) {
+    try { await verify(await getDummyHash(), password); } catch { /* ignore */ }
+    return null;
+  }
   const valid = await verify(found.passwordHash, password);
   return valid ? { userId: found.userId, name: found.name, email: found.email } : null;
 }
@@ -230,6 +250,10 @@ export async function verifyUserPassword(userId, password) {
   return verify(users[id].passwordHash, password);
 }
 
+// Formatos de póster que el bot puede generar (coinciden con los tamaños nativos de Qwen/Wan).
+export const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
+export const normalizeFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
+
 export async function getGenerationSettings(userId) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
@@ -240,20 +264,22 @@ export async function getGenerationSettings(userId) {
     googleDriveFolder: u.googleDriveFolder ?? null,
     colorPalette: u.colorPalette ?? null,
     n8nGenerationWebhook: u.n8nGenerationWebhook ?? null,
+    defaultOrientation: normalizeFormat(u.defaultOrientation),
   };
 }
 
-export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook }) {
+export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation }) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;
-  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook });
+  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation });
   if (errors.length) {
     const e = new Error(errors[0]);
     e.code = 'VALIDATION_ERROR';
     e.details = errors;
     throw e;
   }
+  if (defaultOrientation !== undefined) users[id].defaultOrientation = normalizeFormat(defaultOrientation);
   if (googleDriveFolder !== undefined) users[id].googleDriveFolder = googleDriveFolder || null;
   if (colorPalette !== undefined) users[id].colorPalette = colorPalette || null;
   if (n8nGenerationWebhook !== undefined) users[id].n8nGenerationWebhook = n8nGenerationWebhook || null;
@@ -323,12 +349,15 @@ export async function saveImages(userId, images) {
   await setJson(imagesKey(userId), images);
 }
 
+const VIEWS = ['auto', 'horizontal', 'vertical', 'rotate'];
+
 export async function addImage(userId, imageData) {
   const images = await getImages(userId);
   const newImage = {
     id: randomUUID(),
     url: imageData.url,
     alt: imageData.alt || '',
+    view: VIEWS.includes(imageData.view) ? imageData.view : 'auto',
     order: imageData.order ?? (images.length > 0 ? Math.max(...images.map(i => i.order)) + 1 : 0),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -342,10 +371,15 @@ export async function updateImage(userId, id, updates) {
   const images = await getImages(userId);
   const index = images.findIndex(img => img.id === id);
   if (index === -1) return null;
-  
+
+  // Solo campos editables (evita que el body agregue/pise propiedades arbitrarias).
+  const allowed = {};
+  for (const k of ['url', 'alt', 'order', 'view']) {
+    if (updates[k] !== undefined) allowed[k] = updates[k];
+  }
   images[index] = {
     ...images[index],
-    ...updates,
+    ...allowed,
     updatedAt: new Date().toISOString(),
   };
   
@@ -355,10 +389,13 @@ export async function updateImage(userId, id, updates) {
 
 export async function deleteImage(userId, id) {
   const images = await getImages(userId);
+  const target = images.find(img => img.id === id);
   const filtered = images.filter(img => img.id !== id);
   if (filtered.length === images.length) return false;
-  
+
   await saveImages(userId, filtered);
+  // Borrar también el archivo físico (si lo hospedamos nosotros).
+  if (target && target.url) { await deleteImageFile(target).catch(() => {}); }
   return true;
 }
 
@@ -400,6 +437,7 @@ export async function appendImages(userId, newImages) {
       id: randomUUID(),
       url: img.url,
       alt: img.alt || '',
+      view: VIEWS.includes(img.view) ? img.view : 'auto',
       order: maxOrder,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -414,17 +452,27 @@ export async function appendImages(userId, newImages) {
 }
 
 export async function replaceAllImages(userId, newImages) {
+  const prev = await getImages(userId);
   const images = newImages.map((img, index) => ({
     id: img.id || randomUUID(),
     url: img.url,
     alt: img.alt || '',
+    view: VIEWS.includes(img.view) ? img.view : 'auto',
     order: img.order ?? index,
     createdAt: img.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }));
-  
+
   images.sort((a, b) => a.order - b.order);
   await saveImages(userId, images);
+
+  // Borrar los archivos de las imágenes que ya no están en el carrusel.
+  const keepUrls = new Set(images.map((i) => i.url));
+  for (const old of prev) {
+    if (old && old.url && !keepUrls.has(old.url)) {
+      await deleteImageFile(old).catch(() => {});
+    }
+  }
   return images;
 }
 
@@ -439,28 +487,43 @@ export function isHttpUrl(url) {
   }
 }
 
+const MAX_ALT = 300;
+
 export function validateImageUrl(url) {
-  // Rutas internas servidas por el propio dominio (imágenes re-hospedadas en
-  // disco). No se aceptan absolutas de otros orígenes ni "//host".
-  if (typeof url === 'string' && url.startsWith('/uploads/')) return true;
-  return isHttpUrl(url);
+  if (typeof url !== 'string' || url.length > 2048) return false;
+  // Nada de espacios, comillas, <, > ni backticks: la URL acaba en atributos HTML.
+  if (/[\s<>"'`\\]/.test(url)) return false;
+  // Rutas internas servidas por el propio dominio (imágenes re-hospedadas en disco).
+  if (url.startsWith('/uploads/')) return /^\/uploads\/[A-Za-z0-9._-]+$/.test(url);
+  // Absolutas: solo https (http daría contenido mixto y es inseguro).
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 export function validateImageData(data) {
   const errors = [];
-  
+
   if (!data.url || typeof data.url !== 'string') {
     errors.push('URL is required');
   } else if (!validateImageUrl(data.url)) {
-    errors.push('Invalid URL format (must be http/https)');
+    errors.push('URL inválida (usa https:// o una imagen subida)');
   }
-  
+
   if (data.alt && typeof data.alt !== 'string') {
     errors.push('Alt text must be a string');
+  } else if (typeof data.alt === 'string' && data.alt.length > MAX_ALT) {
+    errors.push(`Alt text max ${MAX_ALT} characters`);
   }
   
   if (data.order !== undefined && (typeof data.order !== 'number' || !Number.isInteger(data.order))) {
     errors.push('Order must be an integer');
+  }
+
+  if (data.view !== undefined && !VIEWS.includes(data.view)) {
+    errors.push("view must be 'auto', 'horizontal', 'vertical' or 'rotate'");
   }
   
   return errors;
@@ -471,15 +534,21 @@ export function validateImagePatch(data) {
   const errors = [];
 
   if (data.url !== undefined && (typeof data.url !== 'string' || !validateImageUrl(data.url))) {
-    errors.push('Invalid URL format (must be http/https)');
+    errors.push('URL inválida (usa https:// o una imagen subida)');
   }
 
   if (data.alt !== undefined && typeof data.alt !== 'string') {
     errors.push('Alt text must be a string');
+  } else if (typeof data.alt === 'string' && data.alt.length > MAX_ALT) {
+    errors.push(`Alt text max ${MAX_ALT} characters`);
   }
 
   if (data.order !== undefined && (typeof data.order !== 'number' || !Number.isInteger(data.order))) {
     errors.push('Order must be an integer');
+  }
+
+  if (data.view !== undefined && !VIEWS.includes(data.view)) {
+    errors.push("view must be 'auto', 'horizontal', 'vertical' or 'rotate'");
   }
 
   return errors;
@@ -490,8 +559,11 @@ export function validateHexColor(color) {
   return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color.trim());
 }
 
-export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook }) {
+export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation }) {
   const errors = [];
+  if (defaultOrientation != null && !FORMATS.includes(String(defaultOrientation))) {
+    errors.push(`defaultOrientation must be one of: ${FORMATS.join(', ')}`);
+  }
   if (googleDriveFolder != null && !isHttpUrl(String(googleDriveFolder))) {
     errors.push('googleDriveFolder must be a valid http/https URL');
   }

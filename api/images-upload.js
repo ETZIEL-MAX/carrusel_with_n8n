@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { putImage, isLocalImages } from './_store.js';
+import { putImage, isLocalImages, optimizeImage } from './_store.js';
 import {
   addImage, getUsers, sniffImageType,
   verifyToken, getTokenFromCookie, checkRateLimit,
@@ -82,8 +82,9 @@ export async function POST(request) {
   const alt = typeof rawAlt === 'string' ? rawAlt.trim().slice(0, 300) : '';
 
   try {
-    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${kind.ext}`;
-    const stored = await putImage(fileName, buffer, kind.type, request);
+    const opt = await optimizeImage(buffer, kind); // WebP de alta calidad
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
+    const stored = await putImage(fileName, opt.buffer, opt.type, request);
     const image = await addImage(userId, { url: stored.url, alt });
     return successResponse({ ...image, userId }, 'Image uploaded');
   } catch (err) {

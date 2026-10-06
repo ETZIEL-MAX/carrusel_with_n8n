@@ -7,7 +7,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { getJson as redisGet, setJson as redisSet, delKey as redisDel } from './_redis.js';
 import { unlink } from 'node:fs/promises';
-import { put } from '@vercel/blob';
+import { put, del as blobDel } from '@vercel/blob';
 
 const LOCAL = process.env.LOCAL_STORAGE === '1';
 // Image files can live on local disk even when data is in Redis (Docker: Redis + ./.data volume).
@@ -81,4 +81,70 @@ export async function putImage(fileName, buffer, contentType, request) {
     addRandomSuffix: false,
   });
   return { url: blob.url, pathname: blob.pathname, contentType: blob.contentType };
+}
+
+// Borra el archivo físico de una imagen que hospedamos nosotros.
+// SOLO toca lo propio: en local, rutas /uploads/...; en Vercel, blobs de
+// vercel-storage.com. Las URLs externas (añadidas a mano) NO se tocan.
+// Nunca lanza: devuelve true/false.
+export async function deleteImageFile(image) {
+  try {
+    const url = typeof image === 'string' ? image : (image && image.url) || '';
+    const pathname = (image && typeof image === 'object' && image.pathname) || '';
+    if (!url && !pathname) return false;
+
+    if (LOCAL_IMAGES) {
+      const src = String(pathname || url);
+      const m = /(?:^|\/)uploads\/([^/?#]+)$/.exec(src);
+      if (!m) return false; // URL externa u otra ruta: no la tocamos
+      await unlink(join(DATA_DIR, 'uploads', m[1]));
+      return true;
+    }
+
+    if (/vercel-storage\.com/i.test(String(url))) {
+      await blobDel(url);
+      return true;
+    }
+    return false;
+  } catch {
+    return false; // archivo ya no existe / error: no es fatal
+  }
+}
+
+// ==================== Optimización de imágenes (WebP) ====================
+// sharp se carga perezosamente; si no está disponible se guarda el original.
+let sharpMod = null;
+async function getSharp() {
+  if (sharpMod === null) {
+    try {
+      sharpMod = (await import('sharp')).default;
+      sharpMod.cache(false); // poca RAM en el contenedor (mem_limit 256 MB)
+      sharpMod.concurrency(1);
+    } catch {
+      sharpMod = false;
+    }
+  }
+  return sharpMod || null;
+}
+
+// Recomprime a WebP de alta calidad (q90: el texto de los pósters se ve igual) sin
+// agrandar y con 1920 px como máximo en el lado largo. GIF (puede ser animado) se deja
+// igual. Si algo falla o no se gana peso, devuelve el original.
+// `kind` = { type, ext } de sniffImageType. Devuelve { buffer, type, ext }.
+export async function optimizeImage(buffer, kind) {
+  const original = { buffer, type: kind?.type, ext: kind?.ext };
+  if (!kind || kind.type === 'image/gif') return original;
+  const sharp = await getSharp();
+  if (!sharp) return original;
+  try {
+    const out = await sharp(buffer, { limitInputPixels: 40_000_000 })
+      .rotate() // respeta la orientación EXIF de fotos de celular
+      .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 90, effort: 4, smartSubsample: true })
+      .toBuffer();
+    if (out.length >= buffer.length) return original;
+    return { buffer: out, type: 'image/webp', ext: 'webp' };
+  } catch {
+    return original;
+  }
 }
