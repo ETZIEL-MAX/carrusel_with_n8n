@@ -84,3 +84,29 @@ test('el carrusel arranca desde la última lista guardada', async ({ page }) => 
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('carrusel:last:USER1') || '[]').length);
   expect(saved).toBe(4);
 });
+
+// Lista simulada (sin service worker) para medir el tiempo de cada diapositiva.
+test.describe('duración por imagen', () => {
+  // El resto de la suite usa reducedMotion (autoplay pausado); aquí hace falta que avance.
+  test.use({ serviceWorkers: 'block', reducedMotion: 'no-preference' });
+
+  test('cada imagen dura lo suyo; el resto usa la del carrusel', async ({ page }) => {
+    const images = IMAGES.slice(0, 3).map((img, i) => ({
+      id: `dur-${i}`, url: img.url, alt: '', order: i, view: 'auto', duration: i === 0 ? 2 : null,
+    }));
+    await page.route('**/api/carrusel?*', (route) =>
+      route.fulfill({ json: { success: true, data: { images, slideDuration: 30 } } }));
+    await page.goto('/carrusel/USER1');
+    await expect(page.locator('.slide')).toHaveCount(3);
+    await expect(page.locator('.slide[data-index="0"]')).toHaveClass(/is-active/);
+
+    // La primera dura 2 s (propia): cambia mucho antes que los 30 s del carrusel.
+    await expect(page.locator('.slide[data-index="1"]')).toHaveClass(/is-active/, { timeout: 5000 });
+    // La segunda no tiene duración propia: usa los 30 s, así que sigue activa.
+    await page.waitForTimeout(4000);
+    await expect(page.locator('.slide[data-index="1"]')).toHaveClass(/is-active/);
+    const pct = await page.locator('#progressFill').evaluate((el) => parseFloat(el.style.width));
+    expect(pct).toBeGreaterThan(5);
+    expect(pct).toBeLessThan(40);
+  });
+});

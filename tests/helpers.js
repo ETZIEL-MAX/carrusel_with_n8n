@@ -64,8 +64,15 @@ export async function useFreshIp(page) {
 }
 
 // Login por la UI del admin.
-export async function uiLogin(page, { asAdmin = false, email = USER1_EMAIL, password = PASSWORD } = {}) {
+// `news: true` deja salir el alert() de novedades; por defecto se marca como ya visto
+// para que no se cruce con los confirm() de las pruebas.
+export async function uiLogin(page, { asAdmin = false, email = USER1_EMAIL, password = PASSWORD, news = false } = {}) {
   await useFreshIp(page);
+  if (!news) {
+    await page.addInitScript(() => {
+      try { localStorage.setItem('carrusel:novedad', 'duracion-v1'); } catch { /* sin storage */ }
+    });
+  }
   await page.goto('/admin');
   if (asAdmin) {
     await page.fill('#adminPassword', password);

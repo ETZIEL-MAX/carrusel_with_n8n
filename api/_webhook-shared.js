@@ -1,6 +1,7 @@
 // Lógica compartida de los endpoints por usuario:
 //   POST /api/webhook/USERx  -> agregar/reemplazar imágenes del carrusel
 //   POST /api/upload/USERx   -> re-hospedar una imagen temporal
+//   POST /api/manage/USERx   -> listar / borrar / cambiar duración (desde el chat)
 //
 // La usan las rutas de Vercel (api/webhook/[userId].js, api/upload/[userId].js)
 // y el servidor local (scripts/server.mjs).
@@ -8,6 +9,8 @@
 import { randomUUID } from 'crypto';
 import {
   appendImages, replaceAllImages, validateImageData, userExists,
+  getImages, updateImage, deleteImage, updateUserSettings, isValidDuration,
+  MIN_DURATION, MAX_DURATION, DEFAULT_SLIDE_DURATION,
   verifyWebhookSignature, isHttpUrl, sniffImageType,
   checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat,
 } from './_utils.js';
@@ -184,6 +187,114 @@ export async function handleSettingsRead(request, rawUserId) {
     },
     'Settings'
   );
+}
+
+// POST /api/manage/:userId
+// Body firmado (HMAC). Administra el carrusel desde n8n (chat) sin login:
+//   { "action": "list" }
+//   { "action": "delete",   "index": 3 }
+//   { "action": "duration", "index": 3, "duration": 20 }
+//   { "action": "duration", "index": "all", "duration": 12 }  -> duración por defecto
+// `index` es la posición en el carrusel (1 = primera); también se acepta `id`.
+export async function handleManage(request, rawUserId) {
+  const userId = normalizeUserId(rawUserId);
+  if (!userId) {
+    return errorResponse('userId inválido en la URL (formato: /api/manage/USER1)', 400);
+  }
+
+  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const rateLimit = checkRateLimit(`manage:${clientIp}:${userId}`, RATE_LIMIT);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
+  }
+
+  const signature = request.headers.get('x-webhook-secret');
+  if (!signature) {
+    return errorResponse('Missing signature', 401);
+  }
+
+  const rawBody = await request.text();
+  if (!verifyWebhookSignature(rawBody, signature)) {
+    return errorResponse('Invalid signature', 401);
+  }
+
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  const { action, index, id, duration } = body || {};
+  if (!['list', 'delete', 'duration'].includes(action)) {
+    return errorResponse("action debe ser 'list', 'delete' o 'duration'", 400);
+  }
+
+  if (!(await userExists(userId))) {
+    return errorResponse(`El carrusel ${userId} no existe`, 404);
+  }
+
+  try {
+    const settings = await getGenerationSettings(userId);
+    const slideDuration = settings?.slideDuration ?? DEFAULT_SLIDE_DURATION;
+    const sorted = (await getImages(userId)).slice().sort((a, b) => a.order - b.order);
+
+    if (action === 'list') {
+      const images = sorted.map((img, i) => ({
+        index: i + 1,
+        id: img.id,
+        url: img.url,
+        alt: img.alt || '',
+        duration: img.duration ?? null,
+        effectiveDuration: img.duration ?? slideDuration,
+      }));
+      return successResponse(
+        { userId, count: sorted.length, slideDuration, images },
+        `${sorted.length} imágenes en ${userId}`
+      );
+    }
+
+    if (action === 'duration') {
+      if (!isValidDuration(duration)) {
+        return errorResponse(`La duración debe ser un número entero entre ${MIN_DURATION} y ${MAX_DURATION} segundos`, 400);
+      }
+      if (index === 'all') {
+        await updateUserSettings(userId, { slideDuration: duration });
+        return successResponse(
+          { userId, index: 'all', slideDuration: duration, count: sorted.length },
+          `Duración por defecto de ${userId}: ${duration} s`
+        );
+      }
+    }
+
+    // Localizar la imagen por id o por posición (1..n).
+    const byId = typeof id === 'string' && id !== '';
+    const pos = byId
+      ? sorted.findIndex((img) => img.id === id)
+      : (Number.isInteger(index) ? index - 1 : -1);
+    const target = pos >= 0 ? sorted[pos] : null;
+    if (!target) {
+      const which = byId ? 'esa imagen' : `la imagen #${index}`;
+      return errorResponse(`No existe ${which}; hay ${sorted.length} en el carrusel`, 404);
+    }
+
+    if (action === 'duration') {
+      const updated = await updateImage(userId, target.id, { duration });
+      return successResponse(
+        { userId, index: pos + 1, id: target.id, url: target.url, duration: updated.duration },
+        `La imagen #${pos + 1} ahora dura ${duration} s`
+      );
+    }
+
+    await deleteImage(userId, target.id);
+    return successResponse(
+      { userId, index: pos + 1, id: target.id, url: target.url, count: sorted.length - 1 },
+      `Borrada la imagen #${pos + 1}. Quedan ${sorted.length - 1}`
+    );
+  } catch (err) {
+    console.error('POST /api/manage/:userId error:', err);
+    return errorResponse('Failed to manage carousel', 500);
+  }
 }
 
 // POST /api/upload/:userId

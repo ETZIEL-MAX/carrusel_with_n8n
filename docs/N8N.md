@@ -47,6 +47,7 @@ X-Webhook-Secret: <HMAC-SHA256 hex del cuerpo crudo>
 - `url`: obligatoria, `http` o `https`.
 - `alt`: opcional, se muestra como título sobre la imagen.
 - `order` / `id`: opcionales.
+- `duration`: opcional, segundos que dura esa imagen (2–3600). Sin ella usa la del carrusel.
 
 El `userId` va en la URL (no en el cuerpo). Si lo incluyes en el cuerpo, debe
 coincidir con el de la URL o dará `400`.
@@ -279,3 +280,20 @@ importar el tiempo (`2K`, `prompt_extend`, JPEG 90). Detalle en
 > (mismo bot = un solo webhook de Telegram).
 
 
+## 11. Administrar el carrusel desde el chat
+
+`POST /api/manage/USERx` (misma firma HMAC que el webhook) permite listar, borrar o
+cambiar la duración de una imagen. Detalle en [`API.md`](API.md#manage-administrar-desde-el-chat).
+
+El workflow `DIRECTOR_DE_ARTE_TELEGRAM` lo usa con comandos de texto fijo (sin IA):
+
+| Mensaje | Acción |
+|---|---|
+| `lista` | Muestra cada imagen con su número y duración. |
+| `duracion 3 20` | La imagen #3 dura 20 s. |
+| `duracion todas 12` | Duración por defecto del carrusel. |
+| `borrar 3` | Pide confirmación y borra la imagen #3. |
+
+Además, una **foto** enviada al bot se guarda tal cual en la carpeta de Drive del panel
+(el pie de foto es el nombre del archivo), sin pasar por el agente de IA. Si la cuenta de
+Google no tiene permiso de edición en la carpeta, el bot lo avisa en el chat.

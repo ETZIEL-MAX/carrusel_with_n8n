@@ -1,5 +1,5 @@
 (() => {
-  const AUTOPLAY_MS = 8000;
+  const DEFAULT_SECONDS = 8; // si el servidor no manda duración
   const POLL_MS = 10000;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -17,6 +17,7 @@
   let paused = false;
   let currentId = null;
   let userId = null;
+  let slideDuration = DEFAULT_SECONDS; // duración por defecto del carrusel (segundos)
 
 function escapeHtml(str) {
   return String(str || '').replace(/[&<>"']/g, (c) => ({
@@ -152,21 +153,36 @@ function escapeHtml(str) {
       d.setAttribute('aria-selected', i === current ? 'true' : 'false');
     });
 
-    if (!immediate) restartProgress();
+    // Cada diapositiva programa la siguiente con su propia duración.
+    if (immediate) return;
+    if (timer) scheduleNext();
+    else restartProgress();
+  }
+
+  // Cuánto dura la diapositiva actual: la suya propia o la del carrusel.
+  function currentMs() {
+    const own = Number(images[current]?.duration);
+    const seconds = own > 0 ? own : (slideDuration > 0 ? slideDuration : DEFAULT_SECONDS);
+    return seconds * 1000;
   }
 
   function next() { show(current + 1); }
   function prev() { show(current - 1); }
 
+  function scheduleNext() {
+    clearTimeout(timer);
+    restartProgress();
+    timer = setTimeout(next, currentMs());
+  }
+
   function startAutoplay() {
     stopAutoplay();
     if (images.length < 2 || paused || prefersReduced) return;
-    restartProgress();
-    timer = setInterval(next, AUTOPLAY_MS);
+    scheduleNext();
   }
 
   function stopAutoplay() {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
     clearInterval(progressTimer);
     progressTimer = null;
@@ -180,8 +196,9 @@ function escapeHtml(str) {
     }
     progressStart = performance.now();
     progressFill.style.width = '0%';
+    const total = currentMs();
     progressTimer = setInterval(() => {
-      const pct = Math.min((performance.now() - progressStart) / AUTOPLAY_MS, 1) * 100;
+      const pct = Math.min((performance.now() - progressStart) / total, 1) * 100;
       progressFill.style.width = pct + '%';
     }, 40);
   }
@@ -248,10 +265,11 @@ function escapeHtml(str) {
   const storeKey = () => `carrusel:last:${userId}`;
 
   // Aplica una lista de imágenes; solo reconstruye si de verdad cambió algo.
-  function applyList(incoming) {
-    const signature = JSON.stringify(incoming.map((i) => [i.id, i.url, i.alt, i.order, i.view]));
+  function applyList(incoming, seconds) {
+    const signature = JSON.stringify([seconds, incoming.map((i) => [i.id, i.url, i.alt, i.order, i.view, i.duration])]);
     if (signature === refresh._sig) return;
     refresh._sig = signature;
+    slideDuration = Number(seconds) > 0 ? Number(seconds) : DEFAULT_SECONDS;
     images = incoming.slice().sort((a, b) => a.order - b.order);
     build();
   }
@@ -264,9 +282,13 @@ function escapeHtml(str) {
       const data = await res.json();
       const list = data?.data?.images ?? data?.images;
       const incoming = Array.isArray(list) ? list : [];
-      applyList(incoming);
+      const seconds = data?.data?.slideDuration ?? data?.slideDuration ?? DEFAULT_SECONDS;
+      applyList(incoming, seconds);
       // Última lista buena: si la TV se reinicia sin red, arranca con esto.
-      try { localStorage.setItem(storeKey(), JSON.stringify(incoming)); } catch { /* sin storage */ }
+      try {
+        localStorage.setItem(storeKey(), JSON.stringify(incoming));
+        localStorage.setItem(storeKey() + ':seconds', String(seconds));
+      } catch { /* sin storage */ }
     } catch (err) {
       console.warn('No se pudieron cargar las imágenes:', err.message);
     }
@@ -281,7 +303,8 @@ function escapeHtml(str) {
     // Pintar al instante la última lista conocida y luego actualizar desde la red.
     try {
       const saved = JSON.parse(localStorage.getItem(storeKey()) || 'null');
-      if (Array.isArray(saved) && saved.length) applyList(saved);
+      const savedSeconds = Number(localStorage.getItem(storeKey() + ':seconds')) || DEFAULT_SECONDS;
+      if (Array.isArray(saved) && saved.length) applyList(saved, savedSeconds);
     } catch { /* storage vacío o bloqueado */ }
     refresh();
     setInterval(() => { if (!paused) refresh(); }, POLL_MS);

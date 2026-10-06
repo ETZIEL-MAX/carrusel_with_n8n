@@ -254,6 +254,15 @@ export async function verifyUserPassword(userId, password) {
 export const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
 export const normalizeFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
 
+// Duración de cada diapositiva, en segundos. Cada imagen puede tener la suya
+// (`duration`); si no, se usa la del carrusel (`slideDuration`).
+export const MIN_DURATION = 2;
+export const MAX_DURATION = 3600;
+export const DEFAULT_SLIDE_DURATION = 8;
+export const isValidDuration = (d) => Number.isInteger(d) && d >= MIN_DURATION && d <= MAX_DURATION;
+// Entero en rango -> número; cualquier otra cosa (vacío, null) -> null (usa la del carrusel).
+export const normalizeDuration = (d) => (isValidDuration(d) ? d : null);
+
 export async function getGenerationSettings(userId) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
@@ -265,14 +274,15 @@ export async function getGenerationSettings(userId) {
     colorPalette: u.colorPalette ?? null,
     n8nGenerationWebhook: u.n8nGenerationWebhook ?? null,
     defaultOrientation: normalizeFormat(u.defaultOrientation),
+    slideDuration: normalizeDuration(u.slideDuration) ?? DEFAULT_SLIDE_DURATION,
   };
 }
 
-export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation }) {
+export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration }) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;
-  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation });
+  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration });
   if (errors.length) {
     const e = new Error(errors[0]);
     e.code = 'VALIDATION_ERROR';
@@ -283,6 +293,7 @@ export async function updateUserSettings(userId, { googleDriveFolder, colorPalet
   if (googleDriveFolder !== undefined) users[id].googleDriveFolder = googleDriveFolder || null;
   if (colorPalette !== undefined) users[id].colorPalette = colorPalette || null;
   if (n8nGenerationWebhook !== undefined) users[id].n8nGenerationWebhook = n8nGenerationWebhook || null;
+  if (slideDuration !== undefined) users[id].slideDuration = normalizeDuration(slideDuration);
   users[id].updatedAt = new Date().toISOString();
   await saveUsers(users);
   return getGenerationSettings(id);
@@ -358,6 +369,7 @@ export async function addImage(userId, imageData) {
     url: imageData.url,
     alt: imageData.alt || '',
     view: VIEWS.includes(imageData.view) ? imageData.view : 'auto',
+    duration: normalizeDuration(imageData.duration),
     order: imageData.order ?? (images.length > 0 ? Math.max(...images.map(i => i.order)) + 1 : 0),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -374,7 +386,7 @@ export async function updateImage(userId, id, updates) {
 
   // Solo campos editables (evita que el body agregue/pise propiedades arbitrarias).
   const allowed = {};
-  for (const k of ['url', 'alt', 'order', 'view']) {
+  for (const k of ['url', 'alt', 'order', 'view', 'duration']) {
     if (updates[k] !== undefined) allowed[k] = updates[k];
   }
   images[index] = {
@@ -438,6 +450,7 @@ export async function appendImages(userId, newImages) {
       url: img.url,
       alt: img.alt || '',
       view: VIEWS.includes(img.view) ? img.view : 'auto',
+    duration: normalizeDuration(img.duration),
       order: maxOrder,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -458,6 +471,7 @@ export async function replaceAllImages(userId, newImages) {
     url: img.url,
     alt: img.alt || '',
     view: VIEWS.includes(img.view) ? img.view : 'auto',
+    duration: normalizeDuration(img.duration),
     order: img.order ?? index,
     createdAt: img.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -488,6 +502,7 @@ export function isHttpUrl(url) {
 }
 
 const MAX_ALT = 300;
+const DURATION_ERROR = `La duración debe ser un número entero entre ${MIN_DURATION} y ${MAX_DURATION} segundos`;
 
 export function validateImageUrl(url) {
   if (typeof url !== 'string' || url.length > 2048) return false;
@@ -525,6 +540,10 @@ export function validateImageData(data) {
   if (data.view !== undefined && !VIEWS.includes(data.view)) {
     errors.push("view must be 'auto', 'horizontal', 'vertical' or 'rotate'");
   }
+
+  if (data.duration != null && !isValidDuration(data.duration)) {
+    errors.push(DURATION_ERROR);
+  }
   
   return errors;
 }
@@ -551,6 +570,10 @@ export function validateImagePatch(data) {
     errors.push("view must be 'auto', 'horizontal', 'vertical' or 'rotate'");
   }
 
+  if (data.duration != null && !isValidDuration(data.duration)) {
+    errors.push(DURATION_ERROR);
+  }
+
   return errors;
 }
 
@@ -559,8 +582,11 @@ export function validateHexColor(color) {
   return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color.trim());
 }
 
-export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation }) {
+export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration }) {
   const errors = [];
+  if (slideDuration != null && !isValidDuration(slideDuration)) {
+    errors.push(DURATION_ERROR);
+  }
   if (defaultOrientation != null && !FORMATS.includes(String(defaultOrientation))) {
     errors.push(`defaultOrientation must be one of: ${FORMATS.join(', ')}`);
   }

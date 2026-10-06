@@ -244,6 +244,34 @@ async function runTests() {
   check('PATCH /api/images?userId=USER1', r.status === 200, r.status);
   check('  alt updated', (await r.json()).data?.alt === 'Renombrada por admin', r.status);
 
+  // Duración por imagen
+  r = await fetch(BASE + '/api/images?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ id: idA, duration: 20 }),
+  });
+  check('PATCH duration 20', r.status === 200 && (await r.json()).data?.duration === 20, r.status);
+  for (const bad of [1, 3601, 2.5, '20']) {
+    r = await fetch(BASE + '/api/images?userId=USER1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: J({ id: idA, duration: bad }),
+    });
+    check(`PATCH duration ${JSON.stringify(bad)} -> 400`, r.status === 400, r.status);
+  }
+  r = await fetch(BASE + '/api/images?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ id: idA, duration: null }),
+  });
+  check('PATCH duration null (vuelve al default)', r.status === 200 && (await r.json()).data?.duration === null, r.status);
+  r = await fetch(BASE + '/api/images?userId=USER1', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ url: 'https://x.test/bad-duration.jpg', duration: 0 }),
+  });
+  check('POST duration 0 -> 400', r.status === 400, r.status);
+
   // Super-admin reorder
   r = await fetch(BASE + '/api/images?userId=USER1', {
     method: 'PATCH',
@@ -298,6 +326,23 @@ async function runTests() {
   imagesData = await r.json();
   check('GET /api/carrusel?userId=USER1 (public)', r.status === 200, r.status);
   check('  5 seed images', imagesData.data?.images?.length === 5, imagesData.data?.images?.length);
+  check('  slideDuration por defecto 8', imagesData.data?.slideDuration === 8, imagesData.data?.slideDuration);
+
+  // Duración por defecto del carrusel (settings)
+  r = await fetch(BASE + '/api/settings?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ slideDuration: 12 }),
+  });
+  check('PATCH settings slideDuration 12', r.status === 200 && (await r.json()).data?.slideDuration === 12, r.status);
+  r = await fetch(BASE + '/api/settings?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ slideDuration: 1 }),
+  });
+  check('PATCH settings slideDuration 1 -> 400', r.status === 400, r.status);
+  r = await fetch(BASE + '/api/carrusel?userId=USER1');
+  check('  carrusel publica slideDuration 12', (await r.json()).data?.slideDuration === 12, r.status);
 
   r = await fetch(BASE + '/api/carrusel?userId=INVALID');
   check('GET /api/carrusel invalid userId -> 400', r.status === 400, r.status);
@@ -348,6 +393,44 @@ async function runTests() {
   r = await fetch(BASE + '/api/webhook/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
   wh = await r.json();
   check('webhook replace USER1', r.status === 200 && wh.data.count === 1 && wh.data.images?.length === 1, r.status + ' total=' + wh.data?.images?.length);
+
+  console.log('\n== Manage (HMAC, desde el chat) ==');
+  const manage = async (payload, user = 'USER1', sig) => {
+    const b = J(payload);
+    const res = await fetch(BASE + '/api/manage/' + user, { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sig || sign(b) }, body: b });
+    return { status: res.status, json: await res.json() };
+  };
+  // Dejar USER1 con 3 imágenes conocidas
+  body = J({ images: [{ url: 'https://x.test/m1.jpg' }, { url: 'https://x.test/m2.jpg' }, { url: 'https://x.test/m3.jpg' }], mode: 'replace' });
+  await fetch(BASE + '/api/webhook/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
+
+  let mg = await manage({ action: 'list' }, 'USER1', 'bad');
+  check('manage firma mala -> 401', mg.status === 401, mg.status);
+  mg = await manage({ action: 'list' }, 'USER999');
+  check('manage carrusel inexistente -> 404', mg.status === 404, mg.status);
+
+  mg = await manage({ action: 'list' });
+  check('manage list', mg.status === 200 && mg.json.data?.count === 3, mg.status + ' count=' + mg.json.data?.count);
+  check('  indices 1..3 en orden', mg.json.data?.images?.map((i) => i.index).join() === '1,2,3' && mg.json.data.images[1].url === 'https://x.test/m2.jpg', mg.json.data?.images?.map((i) => i.url).join());
+  check('  duracion efectiva = default (12)', mg.json.data?.images?.[0]?.effectiveDuration === 12 && mg.json.data.images[0].duration === null, mg.json.data?.images?.[0]?.effectiveDuration);
+
+  mg = await manage({ action: 'duration', index: 2, duration: 25 });
+  check('manage duration #2 = 25', mg.status === 200 && mg.json.data?.duration === 25 && mg.json.data?.url === 'https://x.test/m2.jpg', mg.status);
+  mg = await manage({ action: 'duration', index: 2, duration: 99999 });
+  check('manage duration fuera de rango -> 400', mg.status === 400, mg.status);
+  mg = await manage({ action: 'duration', index: 9, duration: 10 });
+  check('manage duration indice inexistente -> 404', mg.status === 404, mg.status + ' ' + mg.json.error);
+  mg = await manage({ action: 'duration', index: 'all', duration: 15 });
+  check('manage duration todas = 15', mg.status === 200 && mg.json.data?.slideDuration === 15, mg.status);
+
+  mg = await manage({ action: 'delete', index: 7 });
+  check('manage delete indice inexistente -> 404', mg.status === 404, mg.status);
+  mg = await manage({ action: 'delete', index: 1 });
+  check('manage delete #1', mg.status === 200 && mg.json.data?.count === 2 && mg.json.data?.url === 'https://x.test/m1.jpg', mg.status + ' count=' + mg.json.data?.count);
+  mg = await manage({ action: 'list' });
+  check('  quedan m2 y m3', mg.json.data?.images?.map((i) => i.url).join() === 'https://x.test/m2.jpg,https://x.test/m3.jpg', mg.json.data?.images?.map((i) => i.url).join());
+  // m2 conserva su duracion propia (25); m3 usa la del carrusel (15). Max 10 llamadas/min por el rate limit.
+  check('  m2 = 25 s, m3 = default 15 s', mg.json.data?.images?.map((i) => i.effectiveDuration).join() === '25,15', mg.json.data?.images?.map((i) => i.effectiveDuration).join());
 
   console.log('\n== Upload (re-hospedaje local, por carrusel) ==');
   body = J({ url: `${BASE}/uploads/probe.png`, alt: 'Subida' });

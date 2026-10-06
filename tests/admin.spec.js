@@ -62,6 +62,58 @@ test('orientación por imagen: "Girar 90°" se guarda y se ve en el badge', asyn
   expect(list.data.images.find((i) => i.id === id).view).toBe('rotate');
 });
 
+test('duración: por imagen y por defecto se guardan y llegan al carrusel', async ({ page }) => {
+  await uiLogin(page);
+
+  // Por imagen
+  const card = page.locator('#userGrid .image-card').last();
+  await card.locator('button[data-action="edit"]').click();
+  await expect(page.locator('#imgModalBackdrop')).toHaveClass(/is-open/);
+  await page.fill('#imgDuration', '1');
+  await page.click('#imgSaveBtn');
+  await expect(page.locator('#imgFormError')).toContainText('entre 2 y 3600');
+  await page.fill('#imgDuration', '20');
+  await page.click('#imgSaveBtn');
+  await expect(page.locator('#userGrid .image-card').last().locator('.image-card__order')).toContainText('20 s');
+
+  // Por defecto del carrusel
+  await page.click('#userSettingsBtn');
+  await expect(page.locator('#genSlideDuration')).toHaveValue('8'); // ajustes ya cargados
+  await page.fill('#genSlideDuration', '12');
+  await page.click('#settingsSaveGenBtn');
+  await expect(page.locator('#genFormOk')).toBeVisible();
+
+  const id = await page.locator('#userGrid .image-card').last().getAttribute('data-id');
+  const list = await (await page.request.get('/api/carrusel?userId=USER1')).json();
+  expect(list.data.slideDuration).toBe(12);
+  expect(list.data.images.find((i) => i.id === id).duration).toBe(20);
+
+  // Vaciar el campo vuelve a la duración por defecto
+  await page.click('#settingsCancelBtn');
+  await page.locator('#userGrid .image-card').last().locator('button[data-action="edit"]').click();
+  await expect(page.locator('#imgDuration')).toHaveValue('20');
+  await page.fill('#imgDuration', '');
+  await page.click('#imgSaveBtn');
+  await expect(page.locator('#imgModalBackdrop')).not.toHaveClass(/is-open/);
+  const again = await (await page.request.get('/api/carrusel?userId=USER1')).json();
+  expect(again.data.images.find((i) => i.id === id).duration).toBeNull();
+});
+
+test('aviso de novedad: sale una sola vez por navegador', async ({ page }) => {
+  const dialogs = [];
+  page.on('dialog', async (d) => { dialogs.push(d.message()); await d.accept(); });
+
+  await uiLogin(page, { news: true });
+  await expect.poll(() => dialogs.length, { timeout: 5000 }).toBe(1);
+  expect(dialogs[0]).toBe('Nueva actualización: ahora puedes modificar el tiempo de cada imagen.');
+
+  // Al volver a entrar (sesión ya iniciada) no se repite
+  await page.reload();
+  await page.waitForSelector('#userDashboard:not([hidden])');
+  await page.waitForTimeout(1200);
+  expect(dialogs.length).toBe(1);
+});
+
 test('borrar imagen la quita del carrusel y del disco', async ({ page }) => {
   await uiLogin(page);
   const cards = page.locator('#userGrid .image-card');

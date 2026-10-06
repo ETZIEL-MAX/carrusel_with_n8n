@@ -49,12 +49,18 @@ for Redis (see git history for a full integration harness pattern).
   - `upload/[userId].js` — HMAC-authenticated; downloads a temporary image URL
     and re-hosts it (Vercel Blob, or `.data/uploads` locally). Hosts are
     restricted by `UPLOAD_ALLOWED_HOSTS` to avoid SSRF (skipped when local).
+  - `manage/[userId].js` — HMAC-authenticated; lets n8n list, delete or change the
+    duration of an image by its position in the carousel (chat commands).
   - `webhook.js` / `upload.js` — retired global endpoints; respond `410 Gone`.
   - `health.js` — HMAC-protected diagnostics (env var presence, storage mode).
   - `auth.js` — login/logout/session check.
 
 Data lives under a single key: `carousel:images` (a JSON array). In local mode
 it is `.data/kv/carousel_images.json`; images are served from `/uploads/*`.
+
+Each image may carry its own `duration` (seconds, 2–3600; `null` = carousel default).
+The per-carousel default is the `slideDuration` user setting (8 s when unset) and is
+returned by `GET /api/carrusel` next to `images`.
 
 ## Conventions
 
@@ -105,6 +111,7 @@ api/_webhook-shared.js  per-user webhook/upload logic
 api/images.js   GET (public) | POST/PATCH/DELETE (admin)
 api/webhook/[userId].js  POST (HMAC) — append (default) or replace
 api/upload/[userId].js   POST (HMAC) — re-host a temporary image URL (Blob or disk)
+api/manage/[userId].js   POST (HMAC) — list / delete / set duration by position
 api/webhook.js / api/upload.js  retired globals — 410 Gone
 api/health.js   POST (HMAC) — diagnostics
 api/auth.js     POST login | GET me | DELETE logout

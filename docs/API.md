@@ -97,7 +97,12 @@ Admin. Actualiza una imagen **o** reordena varias.
 
 #### Modo 1 — actualizar una imagen
 
-**Body**: `{ "id": "...", "url"?, "alt"?, "order"? }` (solo los campos a cambiar).
+**Body**: `{ "id": "...", "url"?, "alt"?, "order"?, "view"?, "duration"? }` (solo los campos a cambiar).
+
+`duration` es cuánto dura esa imagen en pantalla, en segundos (entero entre 2 y 3600).
+Con `null` la imagen vuelve a usar la duración por defecto del carrusel (`slideDuration`,
+8 s si no se configuró; se cambia con `PATCH /api/settings`). El carrusel público
+(`GET /api/carrusel?userId=USER1`) devuelve `{ images, slideDuration }`.
 
 ```bash
 curl -X PATCH https://TU-APP.vercel.app/api/images \
@@ -286,6 +291,28 @@ curl -X POST https://carrusel.etziel.com/api/upload/USER1 \
   -H "X-Webhook-Secret: $SIG" \
   -d "$BODY"
 ```
+
+---
+
+## Manage (administrar desde el chat)
+
+### `POST /api/manage/USER1`
+
+Lista, borra o cambia la duración de imágenes sin iniciar sesión, para que n8n lo haga
+desde el chat. Misma firma que el webhook: `X-Webhook-Secret` = HMAC-SHA256 (hex) del
+cuerpo crudo con `WEBHOOK_SECRET`.
+
+| Body | Qué hace |
+|---|---|
+| `{ "action": "list" }` | Devuelve `{ count, slideDuration, images: [{ index, id, url, alt, duration, effectiveDuration }] }`. |
+| `{ "action": "duration", "index": 3, "duration": 20 }` | La imagen #3 dura 20 s. |
+| `{ "action": "duration", "index": "all", "duration": 12 }` | Cambia la duración por defecto del carrusel. |
+| `{ "action": "delete", "index": 3 }` | Borra la imagen #3 (y su archivo). No se puede deshacer. |
+
+`index` es la posición en el carrusel (1 = primera, según `order`); también se acepta `id`.
+
+**Errores**: `400` acción o duración inválida, `401` firma ausente/incorrecta, `404` carrusel
+o imagen inexistente (`"No existe la imagen #7; hay 5 en el carrusel"`), `429` rate limit.
 
 ---
 

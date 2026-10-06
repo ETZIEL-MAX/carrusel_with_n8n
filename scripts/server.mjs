@@ -278,8 +278,8 @@ const server = http.createServer(async (req, res) => {
   applySecurityHeaders(req, res);
 
   // Handle /api/carrusel?userId=... (query param) - exact match works for /api/carrusel
-  // Rutas por usuario: /api/webhook/USERx y /api/upload/USERx
-  const userApi = pathname.match(/^\/api\/(webhook|upload|settings-read)\/([^/]+)\/?$/);
+  // Rutas por usuario: /api/webhook/USERx, /api/upload/USERx, /api/settings-read/USERx y /api/manage/USERx
+  const userApi = pathname.match(/^\/api\/(webhook|upload|settings-read|manage)\/([^/]+)\/?$/);
   let apiHandler = null;
 
   if (userApi) {
@@ -292,6 +292,7 @@ const server = http.createServer(async (req, res) => {
     apiHandler = (webReq) => {
       if (kind === 'webhook') return webhookShared.handleWebhook(webReq, rawId);
       if (kind === 'settings-read') return webhookShared.handleSettingsRead(webReq, rawId);
+      if (kind === 'manage') return webhookShared.handleManage(webReq, rawId);
       return webhookShared.handleUpload(webReq, rawId);
     };
   } else {

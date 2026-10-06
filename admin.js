@@ -81,6 +81,7 @@
   const imgModalTitle = document.getElementById('imgModalTitle');
   const imgUrl = document.getElementById('imgUrl');
   const imgAlt = document.getElementById('imgAlt');
+  const imgDuration = document.getElementById('imgDuration');
   const imgFormError = document.getElementById('imgFormError');
   const imgCancelBtn = document.getElementById('imgCancelBtn');
   const imgSaveBtn = document.getElementById('imgSaveBtn');
@@ -89,6 +90,7 @@
 
   const userSettingsBtn = document.getElementById('userSettingsBtn');
   const genDriveUrl = document.getElementById('genDriveUrl');
+  const genSlideDuration = document.getElementById('genSlideDuration');
   const colorPaletteRow = document.getElementById('colorPaletteRow');
   const addColorBtn = document.getElementById('addColorBtn');
   const genFormError = document.getElementById('genFormError');
@@ -142,6 +144,29 @@ function escapeHtml(str) {
   const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
   const normFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
 
+  // Duración escrita en un <input type="number">: vacío -> null (usa la del carrusel).
+  const MIN_DURATION = 2;
+  const MAX_DURATION = 3600;
+  const DURATION_ERROR = `La duración debe ser un número entero entre ${MIN_DURATION} y ${MAX_DURATION} segundos`;
+  function readDuration(input) {
+    const raw = input.value.trim();
+    if (raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < MIN_DURATION || n > MAX_DURATION) throw new Error(DURATION_ERROR);
+    return n;
+  }
+
+  // Aviso de novedades: una sola vez por navegador al entrar al panel.
+  const NEWS_KEY = 'carrusel:novedad';
+  const NEWS_ID = 'duracion-v1';
+  function announceNews() {
+    try {
+      if (localStorage.getItem(NEWS_KEY) === NEWS_ID) return;
+      localStorage.setItem(NEWS_KEY, NEWS_ID);
+    } catch { return; /* sin storage no se puede recordar: mejor no repetir el aviso */ }
+    alert('Nueva actualización: ahora puedes modificar el tiempo de cada imagen.');
+  }
+
   function viewLabel(v) {
     return { horizontal: '▭ Horizontal', vertical: '▯ Vertical', rotate: '↻ Girar 90°' }[v] || 'Auto';
   }
@@ -158,6 +183,8 @@ function escapeHtml(str) {
           managingAsSuperAdmin = false;
           showUserDashboard();
         }
+        // Tras pintar el panel, para que el aviso no tape una página en blanco.
+        setTimeout(announceNews, 400);
         return;
       }
     } catch { /* ignore */ }
@@ -218,6 +245,7 @@ function escapeHtml(str) {
       session = { role: 'super-admin' };
       showSuperAdmin();
       toast('Sesión de Super-Admin iniciada');
+      setTimeout(announceNews, 400);
     } catch (err) {
       adminLoginError.textContent = err.message || 'Error de acceso';
     } finally {
@@ -246,6 +274,7 @@ function escapeHtml(str) {
       managingAsSuperAdmin = false;
       showUserDashboard();
       toast('Sesión de usuario iniciada');
+      setTimeout(announceNews, 400);
     } catch (err) {
       userLoginError.textContent = err.message || 'Error de acceso';
     } finally {
@@ -585,6 +614,7 @@ function escapeHtml(str) {
 
     // Reset generation fields
     genDriveUrl.value = '';
+    genSlideDuration.value = '';
     colorSwatches = [];
     genFormError.textContent = '';
     genFormOk.hidden = true;
@@ -613,6 +643,7 @@ function escapeHtml(str) {
       const res = await API.getSettings(genUserId);
       const s = res?.data || {};
       genDriveUrl.value = s.googleDriveFolder || '';
+      genSlideDuration.value = s.slideDuration || '';
       colorSwatches = Array.isArray(s.colorPalette) ? s.colorPalette.map((hex) => ({ hex })) : [];
       genOrientation = normFormat(s.defaultOrientation);
       markSeg(orientSeg, genOrientation);
@@ -695,6 +726,12 @@ function escapeHtml(str) {
       colorPalette: palette.length ? palette : null,
       defaultOrientation: genOrientation,
     };
+    try {
+      genPayload.slideDuration = readDuration(genSlideDuration);
+    } catch (err) {
+      genFormError.textContent = err.message;
+      return;
+    }
 
     if (isSelfService) {
       genFormError.textContent = '';
@@ -706,6 +743,7 @@ function escapeHtml(str) {
         // Reflejar lo que quedó guardado en el servidor (por si normaliza datos).
         const saved = res?.data || genPayload;
         genDriveUrl.value = saved.googleDriveFolder || '';
+        genSlideDuration.value = saved.slideDuration || '';
         colorSwatches = Array.isArray(saved.colorPalette) ? saved.colorPalette.map((hex) => ({ hex })) : [];
         renderColorPalette();
         genFormOk.textContent = '✓ Guardado correctamente';
@@ -787,7 +825,7 @@ function escapeHtml(str) {
           <div class="image-card__alt">${escapeHtml(img.alt || 'Sin título')}</div>
           <a class="image-card__url" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir: ${escapeHtml(img.url)}">${escapeHtml(img.url)}</a>
           <div class="image-card__foot">
-            <span class="image-card__order">#${img.order} · ${viewLabel(img.view)}</span>
+            <span class="image-card__order">#${img.order} · ${viewLabel(img.view)}${img.duration ? ` · ${Number(img.duration)} s` : ''}</span>
             <div style="display:flex; gap:.4rem;">
               <button class="icon-btn" data-action="edit" data-id="${escapeHtml(img.id)}" aria-label="Editar">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -825,6 +863,7 @@ function escapeHtml(str) {
     imgAlt.value = image ? image.alt : '';
     imgView = (image && image.view) ? image.view : 'auto';
     markSeg(viewSeg, imgView);
+    imgDuration.value = (image && image.duration) ? image.duration : '';
     imgFormError.textContent = '';
     imgModalBackdrop.classList.add('is-open');
     setTimeout(() => imgUrl.focus(), 60);
@@ -845,6 +884,12 @@ function escapeHtml(str) {
     imgFormError.textContent = '';
     const payload = { url: imgUrl.value.trim(), alt: imgAlt.value.trim(), view: imgView || 'auto' };
     if (!payload.url) { imgFormError.textContent = 'La URL es obligatoria'; return; }
+    try {
+      payload.duration = readDuration(imgDuration);
+    } catch (err) {
+      imgFormError.textContent = err.message;
+      return;
+    }
     imgSaveBtn.disabled = true; imgSaveBtn.textContent = 'Guardando…';
     try {
       if (editingImgId) {

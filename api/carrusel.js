@@ -1,4 +1,4 @@
-import { getImages, jsonResponse, errorResponse, successResponse, checkRateLimit } from './_utils.js';
+import { getImages, getGenerationSettings, DEFAULT_SLIDE_DURATION, jsonResponse, errorResponse, successResponse, checkRateLimit } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
@@ -22,7 +22,9 @@ export async function GET(request) {
   
   try {
     const images = await getImages(userId.toUpperCase());
-    return successResponse({ images }, 'Images retrieved');
+    const settings = await getGenerationSettings(userId.toUpperCase());
+    const slideDuration = settings?.slideDuration ?? DEFAULT_SLIDE_DURATION;
+    return successResponse({ images, slideDuration }, 'Images retrieved');
   } catch (err) {
     console.error('GET /api/carrusel error:', err);
     return errorResponse('Failed to fetch images', 500);
