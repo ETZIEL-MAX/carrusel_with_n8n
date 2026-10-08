@@ -51,25 +51,53 @@ const API = (() => {
       request(withUserId('/api/images', userId), { method: 'PATCH', body: JSON.stringify(orders) }),
     deleteImage: (userId, id) =>
       request(withUserId(`/api/images?id=${encodeURIComponent(id)}`, userId), { method: 'DELETE' }),
-    // Manual upload (multipart). No manual Content-Type: the browser sets the boundary.
-    uploadImageFile: async (userId, blob, fileName, alt) => {
-      const fd = new FormData();
-      fd.append('file', blob, fileName);
-      if (alt) fd.append('alt', alt);
-      const res = await fetch(withUserId('/api/images-upload', userId), {
+    // Subida de imagen: el archivo va tal cual como cuerpo (el servidor lo escribe a disco
+    // mientras llega, sin multipart).
+    uploadImageFile: async (userId, blob, alt) => {
+      const params = new URLSearchParams();
+      if (alt) params.set('alt', alt);
+      const query = params.toString() ? `/api/images-upload?${params.toString()}` : '/api/images-upload';
+      const res = await fetch(withUserId(query, userId), {
         method: 'POST',
         credentials: 'include',
-        body: fd,
+        headers: { 'Content-Type': blob.type || 'image/webp' },
+        body: blob,
       });
       let data = null;
       try { data = await res.json(); } catch { /* ignore */ }
       if (!res.ok) {
         const err = new Error(data?.error || `Request failed (${res.status})`);
         err.status = res.status;
+        err.details = data?.details;
         throw err;
       }
       return data;
     },
+
+    // Video: el archivo va tal cual como cuerpo y se informa del avance (0..1).
+    uploadVideoFile: (userId, file, alt, onProgress) =>
+      new Promise((resolve, reject) => {
+        const params = new URLSearchParams({ userId });
+        if (alt) params.set('alt', alt);
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `/api/video-upload?${params.toString()}`);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+        };
+        xhr.onload = () => {
+          let data = null;
+          try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+          if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+          const err = new Error(data?.error || `Request failed (${xhr.status})`);
+          err.status = xhr.status;
+          err.details = data?.details;
+          reject(err);
+        };
+        xhr.onerror = () => reject(new Error('No se pudo subir el video: se cortó la conexión'));
+        xhr.send(file);
+      }),
 
     // Auth
     loginAdmin: (password) =>
@@ -77,17 +105,32 @@ const API = (() => {
     loginUser: (email, password) =>
       request('/api/auth', { method: 'POST', body: JSON.stringify({ email, password }) }),
     logout: () => request('/api/auth', { method: 'DELETE' }),
+    logoutAll: () => request('/api/auth?all=1', { method: 'DELETE' }),
     me: () => request('/api/auth'),
 
     // User management (super-admin)
     getUsers: () => request('/api/users'),
     addUser: ({ name, email, password }) =>
       request('/api/users', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
-    updateUser: (userId, { name, email }) =>
+    updateUser: (userId, { name, email, storageLimitMb }) =>
       request(`/api/users?userId=${encodeURIComponent(userId)}`, {
         method: 'PATCH',
-        body: JSON.stringify({ name, email }),
+        body: JSON.stringify({ name, email, storageLimitMb }),
       }),
+    // Genera o regenera el token de webhook. La respuesta es la única vez que se ve.
+    generateToken: (userId) =>
+      request(`/api/users/token?userId=${encodeURIComponent(userId)}`, { method: 'POST' }),
+
+    // Espacio usado y consumo de generación (usuario: lo suyo; super-admin: pasa userId)
+    getUsage: (userId, month) => {
+      const params = new URLSearchParams();
+      if (userId) params.set('userId', userId);
+      if (month) params.set('month', month);
+      const qs = params.toString();
+      return request(`/api/usage${qs ? `?${qs}` : ''}`);
+    },
+    getConfig: () => request('/api/usage'),
+    updateConfig: (data) => request('/api/usage', { method: 'PATCH', body: JSON.stringify(data) }),
     deleteUser: (userId) =>
       request(`/api/users?userId=${encodeURIComponent(userId)}`, { method: 'DELETE' }),
     changeUserPassword: (userId, password) =>

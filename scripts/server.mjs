@@ -7,7 +7,8 @@
 // Datos persistentes en .data/ (KV en .data/kv, imágenes en .data/uploads).
 
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { extname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -38,6 +39,12 @@ process.env.LOCAL_DATA_DIR = process.env.LOCAL_DATA_DIR || join(ROOT, '.data');
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'dev-jwt-secret-0123456789abcdef';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'dev-webhook-secret';
 process.env.ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || (await hash(DEV_PASSWORD));
+// Llave que cifra los tokens de webhook de cada cliente. En producción va en .env.prod;
+// sin ella el servidor arranca igual, pero no se pueden generar tokens.
+if (!IS_PROD) process.env.TOKEN_ENC_KEY = process.env.TOKEN_ENC_KEY || 'dev-token-enc-key-0123456789abcdef';
+if (IS_PROD && (!process.env.TOKEN_ENC_KEY || process.env.TOKEN_ENC_KEY.length < 32)) {
+  console.warn('AVISO: falta TOKEN_ENC_KEY (>=32 caracteres). No se podrán generar tokens por cliente.');
+}
 
 // ---- Handlers reales ----
 const { getJson, setJson } = await import('../api/_store.js');
@@ -52,6 +59,14 @@ const carruselHandler = await import('../api/carrusel.js');
 const imagesUploadHandler = await import('../api/images-upload.js');
 const settingsHandler = await import('../api/settings.js');
 const generateHandler = await import('../api/generate.js');
+const usageHandler = await import('../api/usage.js');
+const videoUploadHandler = await import('../api/video-upload.js');
+
+// Subidas que reciben el cuerpo como flujo (se escribe a disco, no se junta en memoria).
+const STREAM_UPLOADS = {
+  '/api/video-upload': videoUploadHandler.handleVideoUpload,
+  '/api/images-upload': imagesUploadHandler.handleImageUpload,
+};
 
 const API_ROUTES = {
   '/api/images': imagesHandler,
@@ -59,6 +74,8 @@ const API_ROUTES = {
   '/api/auth': authHandler,
   '/api/users': usersHandler,
   '/api/users/password': usersHandler,
+  '/api/users/token': usersHandler,
+  '/api/usage': usageHandler,
   '/api/carrusel': carruselHandler,
   '/api/webhook': webhookHandler,
   '/api/upload': uploadHandler,
@@ -120,6 +137,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
@@ -130,6 +148,9 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.map': 'application/json',
   '.txt': 'text/plain; charset=utf-8',
+  // MOV con H.264 también se sirve como video/mp4: así lo aceptan más navegadores.
+  '.mp4': 'video/mp4',
+  '.mov': 'video/mp4',
 };
 
 const PUBLIC_FILES = new Set([
@@ -141,6 +162,8 @@ const PUBLIC_FILES = new Set([
   'styles.css',
   'sw.js',
   'favicon.ico',
+  // Mediabunny (MPL-2.0): convierte videos en el navegador. Solo se descarga al subir un video.
+  'vendor/mediabunny.min.mjs',
 ]);
 
 // ---- Caché con hash de contenido ----
@@ -152,12 +175,16 @@ const IMMUTABLE = 'public, max-age=31536000, immutable';
 const assetHashes = {};
 const sha1 = (buf, n = 10) => createHash('sha1').update(buf).digest('hex').slice(0, n);
 
+// La versión del sitio depende también del HTML y del service worker del carrusel: si
+// cambia cualquiera, las pantallas abiertas tienen que recargarse.
+const BUILD_FILES = [...VERSIONED, 'index.html', 'sw.js'];
+
 async function computeHashes() {
-  for (const f of VERSIONED) {
+  for (const f of BUILD_FILES) {
     try { assetHashes[f] = sha1(await readFile(join(ROOT, f))); } catch { delete assetHashes[f]; }
   }
 }
-const buildId = () => sha1(VERSIONED.map((f) => assetHashes[f] || '').join('.'));
+const buildId = () => sha1(BUILD_FILES.map((f) => assetHashes[f] || '').join('.'));
 await computeHashes();
 
 const renderCache = new Map();
@@ -202,13 +229,64 @@ async function sendFile(req, res, absolutePath, cacheControl, withEtag = true) {
   }
 }
 
+// Archivos subidos (imagen o video): se envían por trozos y admiten `Range` (206).
+// iPhone/Safari no reproduce un video si el servidor no responde a peticiones parciales,
+// y así ningún archivo subido se carga entero en memoria.
+async function sendUploaded(req, res, absolutePath) {
+  let size;
+  try {
+    const info = await stat(absolutePath);
+    if (!info.isFile()) return false;
+    size = info.size;
+  } catch {
+    return false;
+  }
+  const headers = {
+    'Content-Type': MIME[extname(absolutePath).toLowerCase()] || 'application/octet-stream',
+    'Cache-Control': IMMUTABLE,
+    'Accept-Ranges': 'bytes',
+  };
+
+  let start = 0;
+  let end = size - 1;
+  let status = 200;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || '').trim());
+  if (range && (range[1] !== '' || range[2] !== '')) {
+    if (range[1] === '') {
+      start = Math.max(0, size - Number(range[2])); // bytes=-N: los últimos N
+    } else {
+      start = Number(range[1]);
+      if (range[2] !== '') end = Math.min(Number(range[2]), size - 1);
+    }
+    if (start > end || start >= size) {
+      res.writeHead(416, { ...headers, 'Content-Range': `bytes */${size}` });
+      res.end();
+      return true;
+    }
+    status = 206;
+    headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  }
+  headers['Content-Length'] = end - start + 1;
+  res.writeHead(status, headers);
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  const stream = createReadStream(absolutePath, { start, end });
+  stream.on('error', () => res.destroy());
+  res.on('close', () => stream.destroy()); // el navegador corta a menudo al buscar
+  stream.pipe(res);
+  return true;
+}
+
 async function serveStatic(req, res, url) {
   const pathname = url.pathname;
   // Imágenes subidas: nombres únicos (timestamp+uuid) => cache inmutable y largo.
   if (pathname.startsWith('/uploads/')) {
     const name = basename(pathname);
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return false;
-    return sendFile(req, res, join(process.env.LOCAL_DATA_DIR, 'uploads', name), IMMUTABLE, false);
+    const file = join(process.env.LOCAL_DATA_DIR, 'uploads', name);
+    return sendUploaded(req, res, file);
   }
 
   if (pathname.startsWith('/api/')) return false;
@@ -229,7 +307,9 @@ async function serveStatic(req, res, url) {
   if (!PUBLIC_FILES.has(file)) return false;
 
   if (file.endsWith('.html')) {
-    const { body, etag } = await renderText(file, withVersions);
+    // __BUILD__: la versión con la que se sirvió la página (el carrusel la compara con
+    // la del servidor para recargarse solo cuando hay una nueva).
+    const { body, etag } = await renderText(file, (html) => withVersions(html).replace(/__BUILD__/g, buildId()));
     return sendBuffer(req, res, body, MIME['.html'], 'no-cache', etag);
   }
   if (file === 'sw.js') {
@@ -250,6 +330,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   'font-src https://fonts.gstatic.com',
   "img-src 'self' https: data: blob:",
+  "media-src 'self' https: blob:",
   "connect-src 'self' https://cloudflareinsights.com",
   "worker-src 'self'",
   "manifest-src 'self'",
@@ -278,8 +359,9 @@ const server = http.createServer(async (req, res) => {
   applySecurityHeaders(req, res);
 
   // Handle /api/carrusel?userId=... (query param) - exact match works for /api/carrusel
-  // Rutas por usuario: /api/webhook/USERx, /api/upload/USERx, /api/settings-read/USERx y /api/manage/USERx
-  const userApi = pathname.match(/^\/api\/(webhook|upload|settings-read|manage)\/([^/]+)\/?$/);
+  // Rutas por usuario: /api/webhook/USERx, /api/upload/USERx, /api/settings-read/USERx,
+  // /api/manage/USERx y /api/usage/USERx
+  const userApi = pathname.match(/^\/api\/(webhook|upload|settings-read|manage|usage)\/([^/]+)\/?$/);
   let apiHandler = null;
 
   if (userApi) {
@@ -293,6 +375,7 @@ const server = http.createServer(async (req, res) => {
       if (kind === 'webhook') return webhookShared.handleWebhook(webReq, rawId);
       if (kind === 'settings-read') return webhookShared.handleSettingsRead(webReq, rawId);
       if (kind === 'manage') return webhookShared.handleManage(webReq, rawId);
+      if (kind === 'usage') return webhookShared.handleUsageReport(webReq, rawId);
       return webhookShared.handleUpload(webReq, rawId);
     };
   } else {
@@ -307,14 +390,47 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // Subidas de imagen y video: el cuerpo NO se junta en memoria; el handler lo escribe a disco.
+  // También la subida binaria de n8n (el cuerpo es la imagen, no JSON).
+  const binaryUpload = userApi && userApi[1] === 'upload' && webhookShared.isBinaryUpload(req.headers['content-type']);
+  const streamUpload = binaryUpload
+    ? (webReq, body) => webhookShared.handleUpload(webReq, decodeURIComponent(userApi[2]), body)
+    : STREAM_UPLOADS[pathname];
+  if (streamUpload && req.method === 'POST') {
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      headers[k] = Array.isArray(v) ? v.join(', ') : v;
+    }
+    const webReq = new Request(`http://localhost:${PORT}${req.url}`, { method: 'POST', headers });
+    let webRes;
+    try {
+      webRes = await streamUpload(webReq, req);
+    } catch (err) {
+      console.error('API error:', err);
+      webRes = new Response(JSON.stringify({ success: false, error: 'Error interno del servidor' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // Si se rechazó antes de leer el cuerpo (sin sesión, sin espacio...), se descarta lo
+    // que siga llegando para que el navegador reciba la respuesta y no un corte.
+    req.resume();
+    webRes.headers.forEach((value, key) => res.setHeader(key, value));
+    res.setHeader('Cache-Control', 'no-store');
+    res.writeHead(webRes.status);
+    res.end(Buffer.from(await webRes.arrayBuffer()));
+    return;
+  }
+
   if (apiHandler) {
-    // Límite de tamaño del body: subidas de imagen 25 MB, el resto 1 MB.
-    const isUpload = (userApi && userApi[1] === 'upload') || pathname === '/api/images-upload';
-    const limit = isUpload ? 25 * MB : 1 * MB;
+    // Límite de tamaño del body: 1 MB, salvo el upload de n8n en JSON (imagen en base64),
+    // que llega hasta su tope. Lo más grande va en binario y no pasa por aquí.
+    const isUpload = userApi && userApi[1] === 'upload';
+    const limit = isUpload ? webhookShared.UPLOAD_JSON_BODY_LIMIT : 1 * MB;
     const tooLarge = () =>
       res
         .writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-        .end(JSON.stringify({ success: false, error: 'Payload too large' }));
+        .end(JSON.stringify({ success: false, error: isUpload ? webhookShared.BASE64_TOO_BIG : 'Payload too large' }));
     if (Number(req.headers['content-length'] || 0) > limit) {
       req.resume();
       tooLarge();
@@ -368,6 +484,9 @@ const server = http.createServer(async (req, res) => {
       }
       // Las respuestas de la API nunca se cachean (ni navegador ni Cloudflare).
       res.setHeader('Cache-Control', 'no-store');
+      // Versión vigente del sitio: el carrusel abierto en una TV la ve en cada consulta.
+      if (!IS_PROD) await computeHashes();
+      res.setHeader('X-Build', buildId());
       res.writeHead(webRes.status);
       res.end(Buffer.from(await webRes.arrayBuffer()));
     } catch (err) {

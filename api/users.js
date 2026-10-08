@@ -1,23 +1,13 @@
 import {
   getUsers, getImages, createUser, updateUser, updateUserPassword, deleteUser,
-  verifyToken, getTokenFromCookie, checkRateLimit,
-  jsonResponse, errorResponse, successResponse,
-  isSuperAdmin
+  requireSession, checkRateLimit, getClientIp, normalizeUserId,
+  getStorageUsage, generateClientToken, isValidNewPassword, PASSWORD_ERROR,
+  errorResponse, successResponse,
 } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_AUTH || '5', 10);
 
-async function requireSuperAdmin(request) {
-  const token = getTokenFromCookie(request);
-  if (!token) return errorResponse('Unauthorized', 401);
-  const payload = await verifyToken(token);
-  if (!isSuperAdmin(payload)) return errorResponse('Forbidden', 403);
-  return { payload };
-}
-
-function validUserId(userId) {
-  return typeof userId === 'string' && /^USER\d+$/i.test(userId.trim());
-}
+const requireSuperAdmin = (request) => requireSession(request, { superAdmin: true });
 
 // GET /api/users - List all users (super-admin only).
 // Includes imageCount + up to 3 preview thumbnails per user. Never includes hashes.
@@ -35,6 +25,12 @@ export async function GET(request) {
         images = [];
       }
       const sorted = [...images].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      let storage = null;
+      try {
+        storage = await getStorageUsage(userId, users);
+      } catch {
+        storage = null;
+      }
       return {
         userId,
         name: data.name || userId,
@@ -43,6 +39,14 @@ export async function GET(request) {
         updatedAt: data.updatedAt,
         imageCount: sorted.length,
         preview: sorted.slice(0, 3).map((i) => i.url),
+        usedBytes: storage?.usedBytes ?? 0,
+        limitBytes: storage?.limitBytes ?? 0,
+        storageLimitMb: storage?.storageLimitMb ?? null,
+        defaultLimitMb: storage?.defaultLimitMb ?? null,
+        // Del token solo se sabe si existe y sus últimos 4 caracteres.
+        hasToken: Boolean(data.webhookTokenEnc),
+        tokenHint: data.webhookTokenHint || null,
+        tokenCreatedAt: data.webhookTokenCreatedAt || null,
       };
     })
   );
@@ -52,14 +56,32 @@ export async function GET(request) {
 
 // POST /api/users - Create new user (super-admin only).
 // Body: { name, email, password }. The password is returned once; it is never readable again.
+// POST /api/users/token?userId=USER2 - Genera (o regenera) el token de webhook del cliente.
+// Se devuelve UNA sola vez; el anterior deja de funcionar.
 export async function POST(request) {
+  const url = new URL(request.url);
   const auth = await requireSuperAdmin(request);
   if (auth instanceof Response) return auth;
 
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`users:post:${clientIp}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`users:post:${getClientIp(request)}`, RATE_LIMIT);
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
+  }
+
+  if (url.pathname.endsWith('/token')) {
+    const userId = normalizeUserId(url.searchParams.get('userId'));
+    if (!userId) return errorResponse('Invalid userId', 400);
+    try {
+      const created = await generateClientToken(userId);
+      if (!created) return errorResponse('User not found', 404);
+      return successResponse({ userId, ...created }, 'Token generado');
+    } catch (err) {
+      if (err.code === 'NO_ENC_KEY') {
+        return errorResponse('Falta configurar TOKEN_ENC_KEY en el servidor (mínimo 32 caracteres)', 500);
+      }
+      console.error('POST /api/users/token error:', err);
+      return errorResponse('No se pudo generar el token', 500);
+    }
   }
 
   let body;
@@ -76,8 +98,8 @@ export async function POST(request) {
   if (!email || typeof email !== 'string') {
     return errorResponse('Email required', 400);
   }
-  if (!password || typeof password !== 'string' || password.length < 6) {
-    return errorResponse('Password must be at least 6 characters', 400);
+  if (!isValidNewPassword(password)) {
+    return errorResponse(PASSWORD_ERROR, 400);
   }
 
   try {
@@ -102,11 +124,10 @@ export async function PATCH(request) {
   const auth = await requireSuperAdmin(request);
   if (auth instanceof Response) return auth;
 
-  const rawUserId = url.searchParams.get('userId');
-  if (!validUserId(rawUserId)) {
+  const userId = normalizeUserId(url.searchParams.get('userId'));
+  if (!userId) {
     return errorResponse('Invalid userId', 400);
   }
-  const userId = rawUserId.trim().toUpperCase();
 
   let body;
   try {
@@ -117,8 +138,8 @@ export async function PATCH(request) {
 
   if (url.pathname.endsWith('/password')) {
     const { password } = body || {};
-    if (!password || typeof password !== 'string' || password.length < 6) {
-      return errorResponse('Password must be at least 6 characters', 400);
+    if (!isValidNewPassword(password)) {
+      return errorResponse(PASSWORD_ERROR, 400);
     }
 
     const updated = await updateUserPassword(userId, password);
@@ -129,21 +150,25 @@ export async function PATCH(request) {
     return successResponse({ userId, password }, 'Password updated');
   }
 
-  const { name, email } = body || {};
-  if (name === undefined && email === undefined) {
+  const { name, email, storageLimitMb } = body || {};
+  if (name === undefined && email === undefined && storageLimitMb === undefined) {
     return errorResponse('Nothing to update', 400);
   }
 
   try {
-    const updated = await updateUser(userId, { name, email });
+    const updated = await updateUser(userId, { name, email, storageLimitMb });
     if (!updated) {
       return errorResponse('User not found', 404);
     }
     return successResponse(
-      { userId, name: updated.name, email: updated.email, updatedAt: updated.updatedAt },
+      {
+        userId, name: updated.name, email: updated.email, updatedAt: updated.updatedAt,
+        storageLimitMb: updated.storageLimitMb ?? null,
+      },
       'User updated'
     );
   } catch (err) {
+    if (err.code === 'INVALID_LIMIT') return errorResponse(err.message, 400);
     if (err.code === 'EMAIL_TAKEN') return errorResponse('Email already in use', 409);
     if (err.code === 'INVALID_EMAIL') return errorResponse('Invalid email', 400);
     if (err.code === 'INVALID_NAME') return errorResponse('Invalid name', 400);
@@ -158,12 +183,12 @@ export async function DELETE(request) {
   const auth = await requireSuperAdmin(request);
   if (auth instanceof Response) return auth;
 
-  const rawUserId = url.searchParams.get('userId');
-  if (!validUserId(rawUserId)) {
+  const userId = normalizeUserId(url.searchParams.get('userId'));
+  if (!userId) {
     return errorResponse('Invalid userId', 400);
   }
 
-  const deleted = await deleteUser(rawUserId.trim().toUpperCase());
+  const deleted = await deleteUser(userId);
   if (!deleted) {
     return errorResponse('User not found', 404);
   }

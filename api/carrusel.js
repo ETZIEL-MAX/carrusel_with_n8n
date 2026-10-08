@@ -1,17 +1,17 @@
-import { getImages, getGenerationSettings, DEFAULT_SLIDE_DURATION, jsonResponse, errorResponse, successResponse, checkRateLimit } from './_utils.js';
+import { getImages, getGenerationSettings, DEFAULT_SLIDE_DURATION, errorResponse, successResponse, checkRateLimit, getClientIp, normalizeUserId } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
 // GET /api/carrusel?userId=USER1 - Public carousel endpoint (no auth)
 export async function GET(request) {
   const url = new URL(request.url);
-  const userId = url.searchParams.get('userId');
+  const userId = normalizeUserId(url.searchParams.get('userId'));
   
-  if (!userId || !userId.startsWith('USER')) {
+  if (!userId) {
     return errorResponse('Invalid userId', 400);
   }
   
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`carrusel:get:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
@@ -21,8 +21,8 @@ export async function GET(request) {
   }
   
   try {
-    const images = await getImages(userId.toUpperCase());
-    const settings = await getGenerationSettings(userId.toUpperCase());
+    const images = await getImages(userId);
+    const settings = await getGenerationSettings(userId);
     const slideDuration = settings?.slideDuration ?? DEFAULT_SLIDE_DURATION;
     return successResponse({ images, slideDuration }, 'Images retrieved');
   } catch (err) {

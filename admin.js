@@ -19,6 +19,18 @@
   const loginPanels = document.querySelectorAll('.login-panel');
 
   const superAdminLogoutBtn = document.getElementById('superAdminLogoutBtn');
+  const superAdminLogoutAllBtn = document.getElementById('superAdminLogoutAllBtn');
+  const priceForm = document.getElementById('priceForm');
+  const priceInput = document.getElementById('priceInput');
+  const priceSaveBtn = document.getElementById('priceSaveBtn');
+  const planPanel = document.getElementById('planPanel');
+  const storageText = document.getElementById('storageText');
+  const storageMeter = document.getElementById('storageMeter');
+  const storageFill = document.getElementById('storageFill');
+  const storageHint = document.getElementById('storageHint');
+  const usageMonth = document.getElementById('usageMonth');
+  const usageStats = document.getElementById('usageStats');
+  const usageHint = document.getElementById('usageHint');
   const addUserBtn = document.getElementById('addUserBtn');
   const superAdminGrid = document.getElementById('superAdminGrid');
   const superAdminEmpty = document.getElementById('superAdminEmpty');
@@ -31,6 +43,8 @@
   const addImgBtn = document.getElementById('addImgBtn');
   const uploadImgBtn = document.getElementById('uploadImgBtn');
   const uploadImgInput = document.getElementById('uploadImgInput');
+  const cameraBtn = document.getElementById('cameraBtn');
+  const cameraInput = document.getElementById('cameraInput');
   const uploadStatus = document.getElementById('uploadStatus');
   const uploadStatusText = document.getElementById('uploadStatusText');
   const uploadStatusFill = document.getElementById('uploadStatusFill');
@@ -54,6 +68,8 @@
   const pwdRevealBackdrop = document.getElementById('pwdRevealBackdrop');
   const pwdRevealTitle = document.getElementById('pwdRevealTitle');
   const pwdRevealText = document.getElementById('pwdRevealText');
+  const pwdRevealHint = document.getElementById('pwdRevealHint');
+  const pwdRevealLabel = document.getElementById('pwdRevealLabel');
   const pwdRevealCopyBtn = document.getElementById('pwdRevealCopyBtn');
   const pwdRevealCloseBtn = document.getElementById('pwdRevealCloseBtn');
 
@@ -69,6 +85,12 @@
   const settingsCancelBtn = document.getElementById('settingsCancelBtn');
   const settingsSaveBtn = document.getElementById('settingsSaveBtn');
   const accountSection = document.getElementById('accountSection');
+  const planSection = document.getElementById('planSection');
+  const setStorageLimit = document.getElementById('setStorageLimit');
+  const setStorageHint = document.getElementById('setStorageHint');
+  const tokenStatus = document.getElementById('tokenStatus');
+  const tokenGenBtn = document.getElementById('tokenGenBtn');
+  const selfLogoutAllBtn = document.getElementById('selfLogoutAllBtn');
   const webhookDocs = document.getElementById('webhookDocs');
   const whUrl = document.getElementById('whUrl');
   const whHeaders = document.getElementById('whHeaders');
@@ -141,6 +163,84 @@ function escapeHtml(str) {
   }[c]));
 }
 
+  const MIN_PASSWORD = 10;
+  const PASSWORD_ERROR = `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres`;
+
+  // ===== Espacio y consumo =====
+  const MB = 1024 * 1024;
+  function formatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 * MB) return `${(n / (1024 * MB)).toFixed(2)} GB`;
+    if (n >= 10 * MB) return `${Math.round(n / MB)} MB`;
+    return `${(n / MB).toFixed(1)} MB`;
+  }
+  const formatInt = (n) => (Number(n) || 0).toLocaleString('es-MX');
+  const formatUsd = (n) => `$${(Number(n) || 0).toFixed(2)} USD`;
+  // 0..100 y la clase de color: ámbar desde 80 %, rojo desde 95 %.
+  function storageLevel(used, limit) {
+    const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+    return { pct, cls: pct >= 95 ? 'is-full' : pct >= 80 ? 'is-warn' : '' };
+  }
+  function recentMonths(count = 6) {
+    const out = [];
+    const d = new Date();
+    for (let i = 0; i < count; i++) {
+      out.push(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1)).toISOString().slice(0, 7));
+    }
+    return out;
+  }
+  function monthLabel(ym) {
+    const [y, m] = ym.split('-').map(Number);
+    const name = new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString('es-MX', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+  usageMonth.innerHTML = recentMonths()
+    .map((ym) => `<option value="${ym}">${escapeHtml(monthLabel(ym))}</option>`)
+    .join('');
+
+  async function loadPlan() {
+    const id = activeUserId();
+    if (!id) return;
+    try {
+      const res = await API.getUsage(managingAsSuperAdmin ? id : null, usageMonth.value);
+      if (id !== activeUserId()) return; // cambió de carrusel mientras cargaba
+      renderPlan(res?.data || {});
+    } catch {
+      planPanel.hidden = true;
+    }
+  }
+
+  function renderPlan({ storage, usage }) {
+    if (!storage || !usage) { planPanel.hidden = true; return; }
+    const { pct, cls } = storageLevel(storage.usedBytes, storage.limitBytes);
+    storageText.textContent = `${formatBytes(storage.usedBytes)} de ${formatBytes(storage.limitBytes)}`;
+    storageMeter.className = `meter ${cls}`.trim();
+    storageMeter.setAttribute('aria-valuenow', String(pct));
+    storageFill.style.width = `${pct}%`;
+    storageHint.textContent = storage.freeBytes > 0
+      ? `Te quedan ${formatBytes(storage.freeBytes)} (${100 - pct} % libre).`
+      : 'Espacio lleno: borra imágenes o pide más espacio para seguir subiendo.';
+
+    const videos = usage.videos
+      ? `${formatInt(usage.videos)}${usage.videoSeconds ? ` · ${formatInt(usage.videoSeconds)} s` : ''}`
+      : '0';
+    const stats = [
+      ['Imágenes', formatInt(usage.images)],
+      ['Videos', videos],
+      ['Tokens', formatInt(usage.tokensTotal)],
+      ['Costo aprox.', formatUsd(usage.estimatedCostUsd)],
+    ];
+    usageStats.innerHTML = stats
+      .map(([label, value]) => `<div class="usage-stat"><span class="usage-stat__value">${escapeHtml(value)}</span><span class="usage-stat__label">${escapeHtml(label)}</span></div>`)
+      .join('');
+    usageHint.textContent = usage.images || usage.videos || usage.tokensTotal
+      ? `Tokens: los que reporta el proveedor. Costo aproximado: ${formatInt(usage.imagesNoTokens)} ${usage.imagesNoTokens === 1 ? 'imagen' : 'imágenes'} sin tokens reportados × ${formatUsd(usage.imagePriceUsd)}.`
+      : 'Sin generación registrada en este mes.';
+    planPanel.hidden = false;
+  }
+
+  usageMonth.addEventListener('change', loadPlan);
+
   const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
   const normFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
 
@@ -166,6 +266,11 @@ function escapeHtml(str) {
     } catch { return; /* sin storage no se puede recordar: mejor no repetir el aviso */ }
     alert('Nueva actualización: ahora puedes modificar el tiempo de cada imagen.');
   }
+
+  // Los elementos antiguos no traen `type`: son imágenes salvo que la URL sea de video.
+  const VIDEO_URL = /\.(mp4|mov|m4v|webm)(?:[?#]|$)/i;
+  const isVideoItem = (item) => item?.type === 'video' || (item?.type !== 'image' && VIDEO_URL.test(item?.url || ''));
+  const isVideoFile = (file) => file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv|avi|3gp|ogv)$/i.test(file.name || '');
 
   function viewLabel(v) {
     return { horizontal: '▭ Horizontal', vertical: '▯ Vertical', rotate: '↻ Girar 90°' }[v] || 'Auto';
@@ -221,6 +326,8 @@ function escapeHtml(str) {
     userPublicLink.href = `/carrusel/${encodeURIComponent(id)}`;
     backToUsersBtn.hidden = !managingAsSuperAdmin;
     userSettingsBtn.hidden = managingAsSuperAdmin;
+    planPanel.hidden = true;
+    usageMonth.value = recentMonths(1)[0];
     loadUserImages();
   }
 
@@ -296,6 +403,47 @@ function escapeHtml(str) {
     toast('Sesión cerrada');
   });
 
+  // Cierra la sesión en todos los dispositivos (también deja sin efecto una cookie copiada).
+  async function logoutEverywhere() {
+    if (!confirm('¿Cerrar la sesión en todos los dispositivos? Tendrás que volver a entrar.')) return;
+    try {
+      await API.logoutAll();
+      session = null;
+      closeSettingsModal();
+      showLogin();
+      toast('Todas las sesiones cerradas');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  superAdminLogoutAllBtn.addEventListener('click', logoutEverywhere);
+  selfLogoutAllBtn.addEventListener('click', logoutEverywhere);
+
+  // Precio aproximado por imagen (configuración global del super-admin)
+  async function loadConfig() {
+    try {
+      const res = await API.getConfig();
+      priceInput.value = res?.data?.imagePriceUsd ?? '';
+    } catch { /* se queda vacío */ }
+  }
+
+  priceForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const value = Number(priceInput.value);
+    if (priceInput.value.trim() === '' || !Number.isFinite(value) || value < 0 || value > 100) {
+      toast('El precio debe ser un número entre 0 y 100', 'error');
+      return;
+    }
+    priceSaveBtn.disabled = true;
+    try {
+      const res = await API.updateConfig({ imagePriceUsd: value });
+      priceInput.value = res?.data?.imagePriceUsd ?? value;
+      toast('Precio por imagen guardado');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      priceSaveBtn.disabled = false;
+    }
+  });
+
   backToUsersBtn.addEventListener('click', () => {
     showSuperAdmin();
   });
@@ -303,6 +451,7 @@ function escapeHtml(str) {
   // ===== Super-Admin: User Management =====
   async function loadSuperAdminUsers() {
     superAdminGrid.innerHTML = Array.from({ length: 4 }).map(() => '<div class="skeleton"></div>').join('');
+    loadConfig();
     try {
       const res = await API.getUsers();
       superAdminUsers = Array.isArray(res?.data?.users) ? res.data.users : [];
@@ -327,6 +476,7 @@ function escapeHtml(str) {
           <a class="user-card__thumb" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
             <img src="${escapeHtml(url)}" alt="" loading="lazy" />
           </a>`).join('');
+        const level = storageLevel(user.usedBytes, user.limitBytes);
         return `
       <article class="image-card user-card" data-userid="${escapeHtml(user.userId)}">
         <div class="user-card__preview">${thumbs || '<span class="user-card__nophoto">Sin imágenes</span>'}</div>
@@ -334,7 +484,11 @@ function escapeHtml(str) {
           <div class="user-card__name" style="font-size: 1.1rem;">${escapeHtml(user.name || user.userId)}</div>
           <div class="user-card__email" style="font-size: 0.85rem; color: var(--ink-dim);">${escapeHtml(user.email || '')}</div>
           <div class="user-card__id" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent);">
-            ${escapeHtml(user.userId)} · ${user.imageCount ?? 0} imagen${(user.imageCount ?? 0) === 1 ? '' : 'es'}
+            ${escapeHtml(user.userId)} · ${user.imageCount ?? 0} ${(user.imageCount ?? 0) === 1 ? 'imagen' : 'imágenes'}
+          </div>
+          <div class="user-card__storage">
+            <div class="meter ${level.cls}"><div class="meter__fill" style="width:${level.pct}%"></div></div>
+            <span>${escapeHtml(formatBytes(user.usedBytes))} de ${escapeHtml(formatBytes(user.limitBytes))} · ${user.hasToken ? 'con token' : 'sin token'}</span>
           </div>
           <div class="user-card__meta" style="font-size: 0.8rem; color: var(--ink-dim);">
             Creado: ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}
@@ -347,7 +501,7 @@ function escapeHtml(str) {
             <a class="icon-btn" href="/carrusel/${escapeHtml(user.userId)}" target="_blank" rel="noopener" aria-label="Ver carrusel público" title="Ver carrusel público">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
             </a>
-            <button class="icon-btn" data-action="settings" data-userid="${escapeHtml(user.userId)}" aria-label="Ajustes: correo, contraseña y webhook" title="Ajustes: correo, contraseña y webhook">
+            <button class="icon-btn" data-action="settings" data-userid="${escapeHtml(user.userId)}" aria-label="Ajustes: cuenta, espacio, token y webhook" title="Ajustes: cuenta, espacio, token y webhook">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
             <button class="icon-btn icon-btn--danger" data-action="delete" data-userid="${escapeHtml(user.userId)}" aria-label="Eliminar usuario" title="Eliminar usuario">
@@ -432,7 +586,7 @@ function escapeHtml(str) {
     userSaveBtn.disabled = true;
     try {
       const pwd = newUserPassword.value;
-      if (pwd.length < 6) { userFormError.textContent = 'La contraseña debe tener al menos 6 caracteres'; return; }
+      if (pwd.length < MIN_PASSWORD) { userFormError.textContent = PASSWORD_ERROR; return; }
       userSaveBtn.textContent = 'Creando…';
       const res = await API.addUser({ name, email, password: pwd });
       closeUserModal();
@@ -446,11 +600,24 @@ function escapeHtml(str) {
     }
   });
 
-  // Password shown once (on create / change)
-  function openPwdReveal(userId, password) {
-    pwdRevealTitle.textContent = `Contraseña de ${userId}`;
-    pwdRevealText.value = password;
+  // Password or token shown once (on create / change / generate)
+  let revealNoun = 'Contraseña';
+  function openSecretReveal({ title, hint, label, value }) {
+    revealNoun = label;
+    pwdRevealTitle.textContent = title;
+    pwdRevealHint.textContent = hint;
+    pwdRevealLabel.textContent = label;
+    pwdRevealText.value = value;
     pwdRevealBackdrop.classList.add('is-open');
+  }
+
+  function openPwdReveal(userId, password) {
+    openSecretReveal({
+      title: `Contraseña de ${userId}`,
+      hint: 'Guárdala ahora: no se podrá volver a ver.',
+      label: 'Contraseña',
+      value: password,
+    });
   }
 
   function closePwdReveal() {
@@ -461,12 +628,11 @@ function escapeHtml(str) {
   pwdRevealCopyBtn.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(pwdRevealText.value);
-      toast('Contraseña copiada');
     } catch {
       pwdRevealText.select();
       document.execCommand('copy');
-      toast('Contraseña copiada');
     }
+    toast(revealNoun === 'Token' ? 'Token copiado' : 'Contraseña copiada');
   });
 
   pwdRevealCloseBtn.addEventListener('click', closePwdReveal);
@@ -569,13 +735,14 @@ function escapeHtml(str) {
       `URL: ${origin}/api/webhook/${userId}`,
       'Method: POST',
       'Header: Content-Type: application/json',
+      'Header: X-Webhook-Timestamp: {{ $json.timestamp }}',
       'Header: X-Webhook-Secret: {{ $json.signature }}',
       'Body:',
       body,
     ].join('\n');
     return {
       url: `${origin}/api/webhook/${userId}`,
-      headers: 'Content-Type: application/json\nX-Webhook-Secret: <HMAC-SHA256 hex del cuerpo con WEBHOOK_SECRET>',
+      headers: 'Content-Type: application/json\nX-Webhook-Timestamp: <segundos Unix>\nX-Webhook-Secret: <HMAC-SHA256 hex de "timestamp.cuerpo" con el token del carrusel>',
       body,
       upload: `${origin}/api/upload/${userId}   ·   { "url": "<URL temporal>", "alt": "..." }`,
       block,
@@ -595,6 +762,8 @@ function escapeHtml(str) {
     accountFields.forEach((f) => { if (f) f.hidden = isSelfService; });
     settingsFormError.hidden = isSelfService;
     webhookDocs.hidden = isSelfService;
+    planSection.hidden = isSelfService;
+    selfLogoutAllBtn.hidden = !isSelfService;
     settingsSaveBtn.hidden = isSelfService;
     settingsSaveGenBtn.hidden = !isSelfService;
 
@@ -604,6 +773,12 @@ function escapeHtml(str) {
       setPassword.value = '';
       setPassword.type = 'password';
       settingsFormError.textContent = '';
+      setStorageLimit.value = user.storageLimitMb ?? '';
+      setStorageLimit.placeholder = String(user.defaultLimitMb ?? 500);
+      setStorageHint.textContent = user.limitBytes
+        ? `Usado: ${formatBytes(user.usedBytes)} de ${formatBytes(user.limitBytes)}. Déjalo vacío para usar el límite por defecto (${user.defaultLimitMb ?? 500} MB).`
+        : 'Déjalo vacío para usar el límite por defecto.';
+      renderTokenStatus(user);
       const wh = webhookInfo(user.userId, []);
       whUrl.textContent = wh.url;
       whHeaders.textContent = wh.headers;
@@ -650,6 +825,43 @@ function escapeHtml(str) {
       renderColorPalette();
     } catch { /* leave fields empty */ }
   }
+
+  function renderTokenStatus(user) {
+    if (user.hasToken) {
+      const when = user.tokenCreatedAt ? ` · creado el ${new Date(user.tokenCreatedAt).toLocaleString()}` : '';
+      tokenStatus.textContent = `••••${user.tokenHint || ''}${when}`;
+      tokenGenBtn.textContent = 'Regenerar token';
+    } else {
+      tokenStatus.textContent = 'Sin token (se acepta la firma global antigua)';
+      tokenGenBtn.textContent = 'Generar token';
+    }
+  }
+
+  tokenGenBtn.addEventListener('click', async () => {
+    const userId = settingsUserId;
+    if (!userId) return;
+    const user = superAdminUsers.find((u) => u.userId === userId) || { userId };
+    const question = user.hasToken
+      ? `¿Regenerar el token de ${userId}? El token actual dejará de funcionar y habrá que pegar el nuevo en n8n.`
+      : `¿Generar el token de ${userId}? Desde ese momento n8n tendrá que firmar con él las peticiones de este carrusel.`;
+    if (!confirm(question)) return;
+    tokenGenBtn.disabled = true;
+    try {
+      const res = await API.generateToken(userId);
+      Object.assign(user, { hasToken: true, tokenHint: res.data.hint, tokenCreatedAt: res.data.createdAt });
+      renderTokenStatus(user);
+      openSecretReveal({
+        title: `Token de ${userId}`,
+        hint: 'Cópialo ahora y pégalo en la fila de este cliente en n8n. No se podrá volver a ver: si lo pierdes, regenera uno nuevo.',
+        label: 'Token',
+        value: res.data.token,
+      });
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      tokenGenBtn.disabled = false;
+    }
+  });
 
   function closeSettingsModal() {
     settingsModalBackdrop.classList.remove('is-open');
@@ -766,10 +978,16 @@ function escapeHtml(str) {
     const pwd = setPassword.value;
     if (!name) { settingsFormError.textContent = 'El nombre es obligatorio'; return; }
     if (!email) { settingsFormError.textContent = 'El correo es obligatorio'; return; }
-    if (pwd && pwd.length < 6) { settingsFormError.textContent = 'La contraseña debe tener al menos 6 caracteres'; return; }
+    if (pwd && pwd.length < MIN_PASSWORD) { settingsFormError.textContent = PASSWORD_ERROR; return; }
+    const limitRaw = setStorageLimit.value.trim();
+    const storageLimitMb = limitRaw === '' ? null : Number(limitRaw);
+    if (storageLimitMb !== null && (!Number.isInteger(storageLimitMb) || storageLimitMb < 1)) {
+      settingsFormError.textContent = 'El límite de almacenamiento debe ser un número entero de MB (1 o más)';
+      return;
+    }
     settingsSaveBtn.disabled = true; settingsSaveBtn.textContent = 'Guardando…';
     try {
-      await API.updateUser(userId, { name, email });
+      await API.updateUser(userId, { name, email, storageLimitMb });
       let newPassword = null;
       if (pwd) {
         const res = await API.changeUserPassword(userId, pwd);
@@ -800,6 +1018,7 @@ function escapeHtml(str) {
       const res = await API.getImages(activeUserId());
       userImages = (res?.data?.images || res?.images || []).slice().sort((a, b) => a.order - b.order);
       renderUserGrid();
+      loadPlan(); // el espacio cambia al subir o borrar
     } catch (err) {
       toast(err.message, 'error');
       userGrid.innerHTML = '';
@@ -807,7 +1026,10 @@ function escapeHtml(str) {
   }
 
   function renderUserGrid() {
-    userCountHint.textContent = `${userImages.length} imagen${userImages.length === 1 ? '' : 'es'}`;
+    const videoCount = userImages.filter(isVideoItem).length;
+    const imageCount = userImages.length - videoCount;
+    userCountHint.textContent = `${imageCount} ${imageCount === 1 ? 'imagen' : 'imágenes'}`
+      + (videoCount ? ` · ${videoCount} video${videoCount === 1 ? '' : 's'}` : '');
     if (userImages.length === 0) {
       userGrid.innerHTML = '';
       userGridEmpty.hidden = false;
@@ -815,10 +1037,17 @@ function escapeHtml(str) {
     }
     userGridEmpty.hidden = true;
     userGrid.innerHTML = userImages
-      .map((img) => `
-      <article class="image-card" draggable="true" data-id="${escapeHtml(img.id)}">
-        <a class="image-card__thumb-link" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir imagen en una pestaña nueva">
-          <img class="image-card__thumb" src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" draggable="false" />
+      .map((img, idx) => {
+        const video = isVideoItem(img);
+        // #t=0.1: el navegador pinta el primer cuadro como miniatura sin descargar todo el video.
+        const thumb = video
+          ? `<video class="image-card__thumb" src="${escapeHtml(img.url)}#t=0.1" preload="metadata" muted playsinline aria-label="${escapeHtml(img.alt || 'Video')}"></video>
+          <span class="image-card__badge">▶ Video</span>`
+          : `<img class="image-card__thumb" src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" draggable="false" />`;
+        return `
+      <article class="image-card" draggable="true" data-id="${escapeHtml(img.id)}" data-type="${video ? 'video' : 'image'}">
+        <a class="image-card__thumb-link" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir en una pestaña nueva">
+          ${thumb}
           <span class="image-card__open">Abrir ↗</span>
         </a>
         <div class="image-card__body">
@@ -827,6 +1056,12 @@ function escapeHtml(str) {
           <div class="image-card__foot">
             <span class="image-card__order">#${img.order} · ${viewLabel(img.view)}${img.duration ? ` · ${Number(img.duration)} s` : ''}</span>
             <div style="display:flex; gap:.4rem;">
+              <button class="icon-btn touch-only" data-action="up" data-id="${escapeHtml(img.id)}" aria-label="Mover antes" title="Mover antes"${idx === 0 ? ' disabled' : ''}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+              </button>
+              <button class="icon-btn touch-only" data-action="down" data-id="${escapeHtml(img.id)}" aria-label="Mover después" title="Mover después"${idx === userImages.length - 1 ? ' disabled' : ''}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>
+              </button>
               <button class="icon-btn" data-action="edit" data-id="${escapeHtml(img.id)}" aria-label="Editar">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
               </button>
@@ -836,7 +1071,7 @@ function escapeHtml(str) {
             </div>
           </div>
         </div>
-        <!-- Responsive previews -->
+        ${video ? '' : `<!-- Responsive previews -->
         <div class="image-card__previews" aria-hidden="true">
           <div class="preview-item" data-size="mobile" title="Móvil (375px)">
             <img src="${escapeHtml(img.url)}" alt="" loading="lazy" />
@@ -850,15 +1085,35 @@ function escapeHtml(str) {
             <img src="${escapeHtml(img.url)}" alt="" loading="lazy" />
             <span class="preview-label">TV</span>
           </div>
-        </div>
-      </article>`)
+        </div>`}
+      </article>`;
+      })
       .join('');
+  }
+
+  // Mover una tarjeta un lugar (botones ↑ ↓: en pantallas táctiles no hay arrastre).
+  async function moveImage(id, step) {
+    const from = userImages.findIndex((i) => i.id === id);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= userImages.length) return;
+    const [moved] = userImages.splice(from, 1);
+    userImages.splice(to, 0, moved);
+    const orders = userImages.map((img, idx) => ({ id: img.id, order: idx }));
+    userImages.forEach((img, idx) => (img.order = idx));
+    renderUserGrid();
+    try {
+      await API.reorderImages(activeUserId(), orders);
+      toast('Orden actualizado');
+    } catch (err) {
+      toast(err.message, 'error');
+      await loadUserImages();
+    }
   }
 
   // Image Modal
   function openImgModal(image = null) {
     editingImgId = image ? image.id : null;
-    imgModalTitle.textContent = image ? 'Editar imagen' : 'Añadir imagen';
+    imgModalTitle.textContent = image ? (isVideoItem(image) ? 'Editar video' : 'Editar imagen') : 'Añadir imagen';
     imgUrl.value = image ? image.url : '';
     imgAlt.value = image ? image.alt : '';
     imgView = (image && image.view) ? image.view : 'auto';
@@ -916,11 +1171,14 @@ function escapeHtml(str) {
     const image = userImages.find((i) => i.id === id);
     if (!image) return;
     if (action === 'edit') openImgModal(image);
+    else if (action === 'up') moveImage(id, -1);
+    else if (action === 'down') moveImage(id, 1);
     else if (action === 'delete') {
-      if (!confirm('¿Eliminar esta imagen?')) return;
+      const video = isVideoItem(image);
+      if (!confirm(video ? '¿Eliminar este video?' : '¿Eliminar esta imagen?')) return;
       try {
         await API.deleteImage(activeUserId(), id);
-        toast('Imagen eliminada');
+        toast(video ? 'Video eliminado' : 'Imagen eliminada');
         await loadUserImages();
       } catch (err) { toast(err.message, 'error'); }
     }
@@ -1040,6 +1298,94 @@ function escapeHtml(str) {
     return { blob, name: `${baseName(file.name) || 'imagen'}.${ext}` };
   }
 
+  // ===== Video: se convierte en el navegador si el servidor no lo aceptaría =====
+  // El servidor solo recibe MP4/MOV en H.264 (ver api/_video.js). Lo que llegue en otro
+  // formato o códec (HEVC, VP9, AV1, WebM, MKV...) se recodifica aquí a H.264 de hasta
+  // 1080 p, sin audio: el carrusel reproduce los videos en silencio. Mediabunny solo se
+  // descarga cuando hay un video que subir (vendor/, MPL-2.0).
+  const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // mismo tope que el servidor (VIDEO_MAX_BYTES)
+  const VIDEO_BUDGET_BYTES = 45 * 1024 * 1024; // margen para que la conversión quepa
+  const VIDEO_MAX_SIDE = 1920;
+  const VIDEO_MAX_BITRATE = 4000000;
+  const VIDEO_MIN_BITRATE = 300000;
+  let mediabunnyPromise = null;
+
+  const loadMediabunny = () => {
+    if (!mediabunnyPromise) {
+      // Si falla la descarga no se guarda el fallo: el siguiente video vuelve a intentarlo.
+      mediabunnyPromise = import('/vendor/mediabunny.min.mjs').catch((err) => {
+        mediabunnyPromise = null;
+        throw err;
+      });
+    }
+    return mediabunnyPromise;
+  };
+
+  const evenPx = (n) => Math.max(2, Math.round(n / 2) * 2); // H.264 pide medidas pares
+
+  // Devuelve { blob, name } listo para subir. `onStatus(texto, fraccion)` informa el avance.
+  async function prepareVideo(file, onStatus) {
+    let mb;
+    try {
+      mb = await loadMediabunny();
+    } catch {
+      // Sin el conversor no se puede revisar el video. Un MP4/MOV que cabe se manda tal
+      // cual y el servidor decide si sirve; lo demás no se puede subir así.
+      if (/\.(mp4|mov|m4v)$/i.test(file.name || '') && file.size <= VIDEO_MAX_BYTES) {
+        return { blob: file, name: file.name };
+      }
+      throw new Error('No se pudo cargar el conversor de video. Revisa tu conexión y vuelve a intentarlo.');
+    }
+    onStatus('Revisando el video…', 0);
+
+    const input = new mb.Input({ formats: mb.ALL_FORMATS, source: new mb.BlobSource(file) });
+    try {
+      // getMimeType() trae parámetros ("video/mp4; codecs=..."): nos quedamos con el tipo base.
+      const mime = (await input.getMimeType()).split(';')[0].trim();
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error('El archivo no tiene video');
+      const codec = await track.getCodec();
+      const w = track.displayWidth;
+      const h = track.displayHeight;
+      const servable = (mime === 'video/mp4' || mime === 'video/quicktime') && codec === 'avc';
+      if (servable && file.size <= VIDEO_MAX_BYTES && Math.max(w, h) <= VIDEO_MAX_SIDE) {
+        return { blob: file, name: file.name };
+      }
+
+      if (!(await mb.canEncodeVideo('avc'))) {
+        throw new Error('Este navegador no puede convertir el video. Expórtalo en H.264 (MP4) y vuelve a subirlo.');
+      }
+
+      const scale = Math.min(1, VIDEO_MAX_SIDE / Math.max(w, h));
+      const duration = Math.max(1, await input.computeDuration());
+      const budget = Math.floor((VIDEO_BUDGET_BYTES * 8) / duration);
+      const bitrate = Math.max(VIDEO_MIN_BITRATE, Math.min(VIDEO_MAX_BITRATE, budget));
+
+      const target = new mb.BufferTarget();
+      const output = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+      const conversion = await mb.Conversion.init({
+        input,
+        output,
+        video: { codec: 'avc', width: evenPx(w * scale), height: evenPx(h * scale), fit: 'contain', bitrate, forceTranscode: true },
+        audio: { discard: true },
+      });
+      if (!conversion.isValid) throw new Error('No se pudo convertir este video');
+
+      conversion.onProgress = (p) => onStatus(`Convirtiendo video… ${Math.round(p * 100)} %`, p);
+      await conversion.execute();
+
+      if (!target.buffer) throw new Error('No se pudo convertir este video');
+      if (target.buffer.byteLength > VIDEO_MAX_BYTES) {
+        const mbs = Math.round(target.buffer.byteLength / 1048576);
+        throw new Error(`El video convertido pesa ${mbs} MB (máx 50 MB). Recórtalo y vuelve a subirlo.`);
+      }
+      const blob = new Blob([target.buffer], { type: 'video/mp4' });
+      return { blob, name: `${baseName(file.name) || 'video'}.mp4` };
+    } finally {
+      input.dispose();
+    }
+  }
+
   function setUploadStatus(text, fraction) {
     uploadStatus.hidden = false;
     uploadStatusText.textContent = text;
@@ -1047,14 +1393,15 @@ function escapeHtml(str) {
   }
 
   async function uploadFiles(fileList) {
-    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
-    if (files.length === 0) { toast('No se seleccionó ninguna imagen', 'error'); return; }
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/') || isVideoFile(f));
+    if (files.length === 0) { toast('No se seleccionó ninguna foto ni video', 'error'); return; }
     if (uploading) { toast('Ya hay una subida en curso', 'error'); return; }
     const userId = activeUserId();
     if (!userId) return;
 
     uploading = true;
     uploadImgBtn.disabled = true;
+    cameraBtn.disabled = true;
     const failures = [];
     let ok = 0;
 
@@ -1062,8 +1409,17 @@ function escapeHtml(str) {
       const file = files[i];
       setUploadStatus(`Subiendo ${i + 1} / ${files.length} · ${file.name}`, i / files.length);
       try {
-        const { blob, name } = await prepareImage(file);
-        await API.uploadImageFile(userId, blob, name, baseName(file.name));
+        if (isVideoFile(file)) {
+          // Si el video ya sirve, sube tal cual; si no, se convierte aquí a H.264 primero.
+          const onStatus = (text, fraction) => setUploadStatus(`${text} · ${i + 1} / ${files.length}`, (i + fraction) / files.length);
+          const { blob } = await prepareVideo(file, onStatus);
+          await API.uploadVideoFile(userId, blob, baseName(file.name), (fraction) => {
+            setUploadStatus(`Subiendo video ${i + 1} / ${files.length} · ${Math.round(fraction * 100)} %`, (i + fraction) / files.length);
+          });
+        } else {
+          const { blob, name } = await prepareImage(file);
+          await API.uploadImageFile(userId, blob, baseName(file.name));
+        }
         ok++;
       } catch (err) {
         failures.push(`${file.name}: ${err.message}`);
@@ -1074,8 +1430,9 @@ function escapeHtml(str) {
     setTimeout(() => { uploadStatus.hidden = true; }, 2500);
     uploading = false;
     uploadImgBtn.disabled = false;
+    cameraBtn.disabled = false;
 
-    if (ok > 0) toast(`${ok} imagen${ok === 1 ? '' : 'es'} subida${ok === 1 ? '' : 's'}`);
+    if (ok > 0) toast(`${ok} archivo${ok === 1 ? '' : 's'} subido${ok === 1 ? '' : 's'}`);
     if (failures.length) toast(`Fallaron ${failures.length}: ${failures.join(' · ')}`, 'error');
     await loadUserImages();
   }
@@ -1086,6 +1443,14 @@ function escapeHtml(str) {
     const files = uploadImgInput.files;
     await uploadFiles(files);
     uploadImgInput.value = ''; // allow selecting the same files again
+  });
+
+  // Celular: abre la cámara y sube la foto en cuanto se toma.
+  cameraBtn.addEventListener('click', () => cameraInput.click());
+
+  cameraInput.addEventListener('change', async () => {
+    await uploadFiles(cameraInput.files);
+    cameraInput.value = '';
   });
 
   // Drop files anywhere on the image dashboard

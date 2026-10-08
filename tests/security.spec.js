@@ -94,17 +94,18 @@ test('permisos: sin sesión 401, usuario no ve datos de otro ni la lista de usua
 
   const user = await playwright.request.newContext({ baseURL });
   await apiLogin(user, { email: 'user1@local.test' });
-  // Pedir el carrusel de USER2 devuelve el propio (USER1), nunca el ajeno
-  const own = await (await user.get('/api/images?userId=USER1')).json();
-  const other = await (await user.get('/api/images?userId=USER2')).json();
-  expect(other.data.images.map((i) => i.id)).toEqual(own.data.images.map((i) => i.id));
+  // Su carrusel sale de la cookie; pedir el de otro por la URL es 403
+  expect((await user.get('/api/images?userId=USER1')).status()).toBe(200);
+  expect((await user.get('/api/images?userId=USER2')).status()).toBe(403);
   expect((await user.get('/api/users')).status()).toBe(403);
   // Subir a otro usuario sí es 403 explícito
   expect((await user.post('/api/images-upload?userId=USER2', {
-    multipart: { file: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from('x') } },
+    headers: { 'content-type': 'image/png' },
+    data: Buffer.from('x'),
   })).status()).toBe(403);
-  const s = await (await user.get('/api/settings?userId=USER2')).json();
-  expect(s.data.userId).toBe('USER1'); // ignora el userId ajeno
+  expect((await user.get('/api/settings?userId=USER2')).status()).toBe(403);
+  const s = await (await user.get('/api/settings')).json();
+  expect(s.data.userId).toBe('USER1');
   await user.dispose();
 });
 
@@ -125,7 +126,8 @@ test('body demasiado grande => 413', async ({ request }) => {
 test('subir algo que no es imagen => 400', async ({ page }) => {
   await uiLogin(page);
   const r = await page.request.post('/api/images-upload?userId=USER1', {
-    multipart: { file: { name: 'malo.png', mimeType: 'image/png', buffer: Buffer.from('<?php echo 1; ?>') } },
+    headers: { 'content-type': 'image/png' },
+    data: Buffer.from('<?php echo 1; ?>'),
   });
   expect(r.status()).toBe(400);
 });

@@ -221,6 +221,11 @@ Descarga una imagen desde una URL **temporal** y la re-hospeda de forma
 nueva URL. Pensado para que n8n convierta la URL efímera de un generador de
 imágenes (p. ej. Alibaba/Qwen, que caduca en ~24 h) en una URL estable.
 
+También acepta la imagen directamente, de tres formas: `{ "url": … }`, `{ "data": "<base64>" }`
+(hasta 8 MB, `UPLOAD_BASE64_MAX_BYTES`) o **el archivo como cuerpo** con `Content-Type: image/*`
+y `?alt=` (hasta `UPLOAD_MAX_BYTES`; se escribe a disco mientras llega y la firma se calcula
+sobre los bytes: `HMAC(token, "<timestamp>." + cuerpo)`). Ver `docs/N8N.md`.
+
 El `userId` sale de la URL y debe existir. El endpoint global antiguo
 (`/api/upload`) responde `410 Gone`.
 
@@ -397,8 +402,9 @@ Si el rol es `user`, incluye además `userId`, `name` y `email`. Si no hay sesi�
 Sube una imagen desde el PC o el móvil y la añade al final del carrusel.
 
 - **Auth**: cookie de sesión. Un usuario sube a su propio carrusel (si pasa otro `userId` → `403`). El super-admin debe indicar `?userId=`.
-- **Body**: `multipart/form-data` con `file` (JPEG, PNG, WebP o GIF; el tipo se comprueba por el contenido real del archivo) y `alt` opcional.
-- **Límite**: 4 MB por archivo (`MANUAL_UPLOAD_MAX_BYTES`). El panel reduce las fotos a 1920 px antes de enviarlas, así que las fotos de móvil quedan muy por debajo.
+- **Body**: el archivo tal cual (`Content-Type: image/*`, sin multipart). JPEG, PNG, WebP o GIF; el tipo se comprueba por el contenido real del archivo. `alt` opcional por query (`?alt=texto`).
+- **Límite**: 25 MB por archivo (`MANUAL_UPLOAD_MAX_BYTES`). El panel reduce las fotos a 1920 px antes de enviarlas, así que las fotos de móvil quedan muy por debajo.
+- **Memoria**: el cuerpo se escribe a un temporal en disco mientras llega y la foto se convierte a WebP con sharp desde disco; no se carga entera en RAM. Las optimizaciones van de una en una (cada una cuesta ~80 MB de RAM nativa).
 - **Almacenamiento**: Vercel Blob (debe ser **público**) o `.data/uploads` en local/Docker.
 
 **Errores**: `400` sin archivo / no es imagen / falta `userId` (super-admin), `401` sin sesión, `403` carrusel ajeno, `404` usuario inexistente, `413` demasiado grande, `429` límite de peticiones.
@@ -436,6 +442,133 @@ Cierra la sesión (borra la cookie).
 ```bash
 curl -X DELETE https://TU-APP.vercel.app/api/auth -b cookies.txt
 ```
+
+---
+
+## Video (panel)
+
+### `POST /api/video-upload[?userId=USER2][&alt=texto]`
+
+Sesión requerida. El cuerpo es el archivo tal cual (`Content-Type: video/mp4` o
+`video/quicktime`), sin multipart ni base64. El servidor lo escribe a disco mientras
+llega; no lo carga en memoria.
+
+- El **servidor** solo acepta **MP4 o MOV con video H.264**: no convierte nada, y lo demás
+  responde `400` con una explicación.
+- La conversión la hace el **panel en el navegador** (Mediabunny, en `vendor/`): un video
+  que no sea MP4/MOV en H.264, o que pase de 1920 px, se recodifica a H.264 de hasta 1080 p,
+  sin audio (el carrusel lo reproduce en silencio), con el bitrate ajustado para caber en 50 MB.
+  Un video que ya sirve se sube tal cual. Lo que el navegador no pueda decodificar se rechaza.
+- Máximo `VIDEO_MAX_BYTES` (50 MB por defecto) → `413`.
+- Cuenta contra el espacio del usuario → `413` con `details.code = "QUOTA_EXCEEDED"`.
+- Respuesta: el elemento creado, con `type: "video"`, `url: "/uploads/USER2-….mp4"` y `bytes`.
+- Solo con almacenamiento en disco (Docker / local). En Vercel responde `501`.
+
+Los videos se sirven con soporte `Range` (`206 Partial Content`), como `video/mp4`.
+
+Cada elemento del carrusel tiene `type`: `"image"` o `"video"`. `POST /api/images`
+lo acepta; si no viene, se deduce de la extensión de la URL (`.mp4`, `.mov`, `.m4v`, `.webm`).
+En el carrusel un video se reproduce silenciado y pasa al siguiente al terminar; si
+tiene `duration`, se corta (o repite) hasta ese tiempo.
+
+### De quién es el carrusel
+
+En todas las rutas con sesión, el carrusel de un usuario sale de su cookie. Si además
+manda `?userId` de otro carrusel, la respuesta es `403`. El super-admin debe indicar `?userId`.
+
+---
+
+## Firma de las peticiones de n8n
+
+Los endpoints `/api/webhook/USERx`, `/api/upload/USERx`, `/api/manage/USERx`,
+`/api/settings-read/USERx` y `/api/usage/USERx` se firman así:
+
+| Caso | Cabeceras |
+|---|---|
+| El carrusel **tiene token** | `X-Webhook-Timestamp: <segundos Unix>` y `X-Webhook-Secret: HMAC-SHA256 hex de "<timestamp>.<cuerpo crudo>"` con el token del carrusel |
+| El carrusel **no tiene token** (transición) | `X-Webhook-Secret: HMAC-SHA256 hex del cuerpo crudo` con `WEBHOOK_SECRET` |
+
+Con token: el timestamp no puede diferir más de 5 minutos, una firma no se puede
+reutilizar y el token de un carrusel no vale para otro. `ALLOW_GLOBAL_WEBHOOK_SECRET=0`
+desactiva el caso sin token. Errores: `401` con `Missing signature`,
+`Missing timestamp`, `Expired timestamp`, `Invalid signature` o `Signature already used`.
+
+---
+
+## Token por cliente (solo super-admin)
+
+### `POST /api/users/token?userId=USER2`
+
+Genera o regenera el token de webhook. La respuesta es **la única vez** que se ve:
+
+```json
+{ "success": true, "data": { "userId": "USER2", "token": "crt_…", "hint": "aB3x", "createdAt": "…" } }
+```
+
+En el servidor queda cifrado (AES-256-GCM con `TOKEN_ENC_KEY`). `GET /api/users`
+solo devuelve `hasToken`, `tokenHint` (últimos 4) y `tokenCreatedAt`.
+
+---
+
+## Espacio y consumo
+
+### `GET /api/usage[?userId=USER2][&month=AAAA-MM]`
+
+Sesión requerida. Un usuario ve lo suyo; el super-admin pasa `?userId`.
+
+```json
+{
+  "success": true,
+  "data": {
+    "userId": "USER2",
+    "storage": { "usedBytes": 190840832, "limitBytes": 524288000, "freeBytes": 333447168, "fileCount": 42, "storageLimitMb": null, "defaultLimitMb": 500 },
+    "usage": { "month": "2026-10", "images": 42, "imagesNoTokens": 40, "videos": 3, "videoSeconds": 15, "tokensIn": 400, "tokensOut": 2000, "tokensTotal": 2400, "imagePriceUsd": 0.06, "estimatedCostUsd": 2.4 }
+  }
+}
+```
+
+`estimatedCostUsd` = `imagesNoTokens × imagePriceUsd`. Los meses son UTC.
+Sin `userId`, el super-admin recibe `{ "imagePriceUsd": 0.06 }`.
+
+### `PATCH /api/usage` (solo super-admin)
+
+`{ "imagePriceUsd": 0.06 }` — precio aproximado por imagen sin tokens reportados.
+
+### `POST /api/usage/USER2` (firmado, desde n8n)
+
+```json
+{ "eventId": "exec-123-qwen", "kind": "image", "model": "qwen-image", "count": 1,
+  "tokens": { "input": 0, "output": 0, "total": 0 }, "seconds": 5 }
+```
+
+`kind`: `image` | `video` | `text`. `tokens` acepta también `input_tokens` /
+`output_tokens` / `total_tokens` o `prompt_tokens` / `completion_tokens`. Un
+`eventId` repetido responde `200` con `duplicate: true` y no suma.
+
+### Límite de espacio
+
+- `PATCH /api/users?userId=USER2` acepta `storageLimitMb` (entero ≥ 1; `null` = límite
+  por defecto, `DEFAULT_STORAGE_MB`, 500).
+- Cuando una subida no cabe (`/api/images-upload` o `/api/upload/USERx`) la respuesta es
+  `413` con `details.code = "QUOTA_EXCEEDED"`, `usedBytes`, `limitBytes` y `fileBytes`.
+- Borrar una imagen libera su espacio. Un archivo solo lo puede borrar el carrusel que lo subió.
+- `node scripts/migrate-storage.mjs [--dry-run]` anota los archivos subidos antes de que
+  existiera el límite. No borra nada.
+
+---
+
+## Sesiones
+
+- La cookie lleva un identificador de sesión. `DELETE /api/auth` la revoca: una copia
+  de esa cookie deja de servir.
+- `DELETE /api/auth?all=1` cierra todas las sesiones de la cuenta.
+- Cambiar la contraseña de un usuario cierra sus sesiones abiertas.
+- La sesión de super-admin dura 30 min (`ADMIN_JWT_EXPIRY`) y solo vale en el navegador
+  donde se inició.
+- Tras 10 intentos fallidos seguidos desde la misma IP contra la misma cuenta, el login
+  responde `429` durante 15 minutos (`LOGIN_MAX_FAILS`, `LOGIN_LOCK_SECONDS`).
+- Las contraseñas nuevas requieren 10 caracteres o más.
+- Las peticiones que cambian datos con un `Origin` distinto al del sitio reciben `403`.
 
 ---
 

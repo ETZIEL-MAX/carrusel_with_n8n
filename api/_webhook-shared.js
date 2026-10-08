@@ -7,17 +7,29 @@
 // y el servidor local (scripts/server.mjs).
 
 import { randomUUID } from 'crypto';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import {
   appendImages, replaceAllImages, validateImageData, userExists,
   getImages, updateImage, deleteImage, updateUserSettings, isValidDuration,
   MIN_DURATION, MAX_DURATION, DEFAULT_SLIDE_DURATION,
-  verifyWebhookSignature, isHttpUrl, sniffImageType,
+  verifyClientSignature, clientSignatureHasher, isHttpUrl, sniffImageType, normalizeUserId, getClientIp,
+  saveUserFile, saveImageFromTemp, quotaErrorResponse, recordUsage, getUsageSummary, USAGE_KINDS,
   checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat,
 } from './_utils.js';
-import { putImage, isLocal, isLocalImages, optimizeImage } from './_store.js';
+import { isLocal, isLocalImages, optimizeImage, uploadTempDir } from './_store.js';
+import { writeCapped, withUploadSlot, cleanupTemp } from './_stream.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_WEBHOOK || '10', 10);
 const MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES || String(15 * 1024 * 1024), 10);
+// En base64 el cuerpo entero pasa por memoria (texto + JSON + bytes): tope más bajo.
+const BASE64_MAX_BYTES = Math.min(MAX_BYTES, parseInt(process.env.UPLOAD_BASE64_MAX_BYTES || String(8 * 1024 * 1024), 10));
+// Un JSON de upload más grande que esto no puede traer una imagen aceptable: el servidor
+// lo rechaza antes de juntarlo en memoria (base64 ocupa 4/3 de los bytes).
+const BASE64_MAX_CHARS = Math.ceil(BASE64_MAX_BYTES / 3) * 4;
+export const UPLOAD_JSON_BODY_LIMIT = BASE64_MAX_CHARS + 64 * 1024;
+export const BASE64_TOO_BIG = `Imagen demasiado grande para enviarla en base64 (máx ${Math.round(BASE64_MAX_BYTES / 1048576)} MB). Envíala en binario: el archivo como cuerpo de la petición, con Content-Type image/*.`;
 const FETCH_TIMEOUT_MS = parseInt(process.env.UPLOAD_FETCH_TIMEOUT || '20000', 10);
 
 const ALLOWED_HOSTS = (process.env.UPLOAD_ALLOWED_HOSTS || 'aliyuncs.com,cloudinary.com,pollinations.ai')
@@ -27,15 +39,43 @@ const ALLOWED_HOSTS = (process.env.UPLOAD_ALLOWED_HOSTS || 'aliyuncs.com,cloudin
 
 export const CORS_OPTIONS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Webhook-Secret',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Webhook-Secret, X-Webhook-Timestamp',
   'Access-Control-Max-Age': '86400',
 };
 
-// `USER1`, `user2` -> `USER1` / `USER2`; cualquier otra cosa -> null.
-export function normalizeUserId(raw) {
-  if (typeof raw !== 'string') return null;
-  const id = raw.trim().toUpperCase();
-  return /^USER\d+$/.test(id) ? id : null;
+export { normalizeUserId };
+
+// Lo que se revisa antes de leer el cuerpo: userId válido, límite de peticiones y que
+// venga una firma. Devuelve el userId o una Response.
+function admitClient(request, rawUserId, route) {
+  const userId = normalizeUserId(rawUserId);
+  if (!userId) {
+    return errorResponse(`userId inválido en la URL (formato: /api/${route}/USER1)`, 400);
+  }
+
+  const rateLimit = checkRateLimit(`${route}:${getClientIp(request)}:${userId}`, RATE_LIMIT);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
+  }
+
+  if (!request.headers.get('x-webhook-secret')) {
+    return errorResponse('Missing signature', 401);
+  }
+  return userId;
+}
+
+// Paso común de todos los endpoints de n8n: userId válido, límite de peticiones y
+// firma del cliente sobre el cuerpo crudo. Devuelve { userId, rawBody } o una Response.
+async function authorizeClient(request, rawUserId, route) {
+  const userId = admitClient(request, rawUserId, route);
+  if (userId instanceof Response) return userId;
+
+  const rawBody = await request.text();
+  const check = await verifyClientSignature(userId, rawBody, request);
+  if (!check.ok) {
+    return errorResponse(check.error, 401);
+  }
+  return { userId, rawBody };
 }
 
 // Extrae el userId de /api/webhook/USER1 o /api/upload/USER1 (para Vercel).
@@ -59,26 +99,9 @@ function isHostAllowed(url) {
 // Body firmado (HMAC): { "images": [...], "mode": "append"|"replace" }
 // `mode` por defecto "append": agrega sin borrar. "replace" sobrescribe todo.
 export async function handleWebhook(request, rawUserId) {
-  const userId = normalizeUserId(rawUserId);
-  if (!userId) {
-    return errorResponse('userId inválido en la URL (formato: /api/webhook/USER1)', 400);
-  }
-
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`webhook:${clientIp}:${userId}`, RATE_LIMIT);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
-  }
-
-  const signature = request.headers.get('x-webhook-secret');
-  if (!signature) {
-    return errorResponse('Missing signature', 401);
-  }
-
-  const rawBody = await request.text();
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    return errorResponse('Invalid signature', 401);
-  }
+  const auth = await authorizeClient(request, rawUserId, 'webhook');
+  if (auth instanceof Response) return auth;
+  const { userId, rawBody } = auth;
 
   let body;
   try {
@@ -148,26 +171,9 @@ export async function handleWebhook(request, rawUserId) {
 // generación (carpeta de Drive + paleta de colores) para que n8n la lea al
 // inicio de un run disparado por Telegram, sin necesidad de login.
 export async function handleSettingsRead(request, rawUserId) {
-  const userId = normalizeUserId(rawUserId);
-  if (!userId) {
-    return errorResponse('userId inválido en la URL (formato: /api/settings-read/USER1)', 400);
-  }
-
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`settings-read:${clientIp}:${userId}`, RATE_LIMIT);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
-  }
-
-  const signature = request.headers.get('x-webhook-secret');
-  if (!signature) {
-    return errorResponse('Missing signature', 401);
-  }
-
-  const rawBody = await request.text();
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    return errorResponse('Invalid signature', 401);
-  }
+  const auth = await authorizeClient(request, rawUserId, 'settings-read');
+  if (auth instanceof Response) return auth;
+  const { userId, rawBody } = auth;
 
   if (!(await userExists(userId))) {
     return errorResponse(`El carrusel ${userId} no existe`, 404);
@@ -197,26 +203,9 @@ export async function handleSettingsRead(request, rawUserId) {
 //   { "action": "duration", "index": "all", "duration": 12 }  -> duración por defecto
 // `index` es la posición en el carrusel (1 = primera); también se acepta `id`.
 export async function handleManage(request, rawUserId) {
-  const userId = normalizeUserId(rawUserId);
-  if (!userId) {
-    return errorResponse('userId inválido en la URL (formato: /api/manage/USER1)', 400);
-  }
-
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`manage:${clientIp}:${userId}`, RATE_LIMIT);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
-  }
-
-  const signature = request.headers.get('x-webhook-secret');
-  if (!signature) {
-    return errorResponse('Missing signature', 401);
-  }
-
-  const rawBody = await request.text();
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    return errorResponse('Invalid signature', 401);
-  }
+  const auth = await authorizeClient(request, rawUserId, 'manage');
+  if (auth instanceof Response) return auth;
+  const { userId, rawBody } = auth;
 
   let body;
   try {
@@ -297,32 +286,126 @@ export async function handleManage(request, rawUserId) {
   }
 }
 
+// POST /api/usage/:userId
+// Body firmado (HMAC). n8n avisa cada vez que genera algo para este cliente:
+//   { "eventId": "<id único>", "kind": "image"|"video"|"text", "model": "wan2.7-image-pro",
+//     "count": 1, "tokens": { "input": 0, "output": 0, "total": 0 }, "seconds": 5 }
+// `tokens` es lo que reporta el proveedor (también se aceptan input_tokens/output_tokens/
+// total_tokens o prompt_tokens/completion_tokens); si no hay, la imagen se cuenta sin tokens
+// y entra en el costo aproximado. `eventId` evita sumar dos veces si n8n reintenta.
+export async function handleUsageReport(request, rawUserId) {
+  const auth = await authorizeClient(request, rawUserId, 'usage');
+  if (auth instanceof Response) return auth;
+  const { userId, rawBody } = auth;
+
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  const { eventId, kind, count, tokens, seconds } = body || {};
+  if (!USAGE_KINDS.includes(kind)) {
+    return errorResponse(`kind debe ser uno de: ${USAGE_KINDS.join(', ')}`, 400);
+  }
+  if (eventId !== undefined && (typeof eventId !== 'string' || !eventId || eventId.length > 200)) {
+    return errorResponse('eventId debe ser un texto de hasta 200 caracteres', 400);
+  }
+
+  if (!(await userExists(userId))) {
+    return errorResponse(`El carrusel ${userId} no existe`, 404);
+  }
+
+  try {
+    const recorded = await recordUsage(userId, { eventId, kind, count, tokens, seconds });
+    const summary = await getUsageSummary(userId);
+    return successResponse(
+      { userId, duplicate: recorded.duplicate, usage: summary },
+      recorded.duplicate ? 'Evento ya contado' : 'Consumo registrado'
+    );
+  } catch (err) {
+    console.error('POST /api/usage/:userId error:', err);
+    return errorResponse('No se pudo registrar el consumo', 500);
+  }
+}
+
+// ¿El cuerpo es la imagen tal cual (y no JSON)?
+export function isBinaryUpload(contentType) {
+  const type = String(contentType || '').toLowerCase();
+  return type.startsWith('image/') || type.startsWith('application/octet-stream');
+}
+
+// POST /api/upload/:userId[?alt=texto]  con Content-Type: image/* — el cuerpo es la imagen.
+// La firma es la de siempre, sobre los bytes: HMAC(token, "<timestamp>." + cuerpo).
+// El cuerpo se escribe a un temporal mientras llega y se firma al vuelo: no pasa por memoria.
+async function handleUploadBinary(request, rawUserId, stream) {
+  const userId = admitClient(request, rawUserId, 'upload');
+  if (userId instanceof Response) return userId;
+
+  const hasher = await clientSignatureHasher(userId, request);
+  if (hasher.error) return errorResponse(hasher.error, 401);
+
+  const tooBig = () => errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
+  const declared = parseInt(request.headers.get('content-length') || '0', 10) || 0;
+  if (declared > MAX_BYTES) return tooBig();
+  if (!stream) return errorResponse('Falta la imagen en el cuerpo de la petición', 400);
+
+  const rawAlt = new URL(request.url).searchParams.get('alt');
+  const alt = typeof rawAlt === 'string' ? rawAlt.trim().slice(0, 300) : '';
+
+  const dir = uploadTempDir();
+  const tmp = join(dir, `.tmp-${randomUUID()}`);
+  try {
+    await mkdir(dir, { recursive: true });
+    const size = await withUploadSlot(() => writeCapped(stream, tmp, MAX_BYTES, hasher.update));
+    if (size === -1) return tooBig();
+
+    // Nada se guarda ni se procesa hasta que la firma de los bytes recibidos cuadra.
+    const check = await hasher.verify();
+    if (!check.ok) return errorResponse(check.error, 401);
+    if (size === 0) return errorResponse('Imagen vacía', 400);
+
+    if (!(await userExists(userId))) {
+      return errorResponse(`El carrusel ${userId} no existe`, 404);
+    }
+    if (!isLocalImages() && !process.env.BLOB_READ_WRITE_TOKEN) {
+      return errorResponse('Almacenamiento no configurado (falta BLOB_READ_WRITE_TOKEN)', 500);
+    }
+
+    const stored = await saveImageFromTemp(userId, tmp);
+    if (!stored) {
+      return errorResponse('El contenido no es una imagen válida (JPEG, PNG, WebP o GIF)', 400);
+    }
+    return successResponse(
+      { url: stored.url, pathname: stored.pathname, contentType: stored.contentType, alt, userId },
+      'Image stored permanently'
+    );
+  } catch (err) {
+    const full = quotaErrorResponse(err);
+    if (full) return full;
+    console.error('POST /api/upload/:userId (raw) error:', err);
+    return errorResponse('Error al guardar la imagen', 500);
+  } finally {
+    await cleanupTemp(tmp);
+  }
+}
+
 // POST /api/upload/:userId
-// Body firmado (HMAC). Dos formas:
-//   1) Binario:  { "data": "<base64>", "contentType": "image/png", "alt": "" }
-//      (la imagen viene en el cuerpo; no hay descarga ni SSRF)
-//   2) URL:      { "url": "<URL temporal>", "alt": "" }
-export async function handleUpload(request, rawUserId) {
-  const userId = normalizeUserId(rawUserId);
-  if (!userId) {
-    return errorResponse('userId inválido en la URL (formato: /api/upload/USER1)', 400);
+// Body firmado (HMAC). Tres formas:
+//   1) Binario:  el cuerpo es la imagen (Content-Type: image/*). La recomendada: no usa memoria.
+//   2) Base64:   { "data": "<base64>", "contentType": "image/png", "alt": "" }  (imágenes chicas)
+//   3) URL:      { "url": "<URL temporal>", "alt": "" }
+// `stream`: el cuerpo como Readable cuando el servidor no lo juntó (solo en la forma 1).
+export async function handleUpload(request, rawUserId, stream = null) {
+  if (isBinaryUpload(request.headers.get('content-type'))) {
+    const body = stream || (request.body ? Readable.fromWeb(request.body) : null);
+    return handleUploadBinary(request, rawUserId, body);
   }
 
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`upload:${clientIp}:${userId}`, RATE_LIMIT);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
-  }
-
-  const signature = request.headers.get('x-webhook-secret');
-  if (!signature) {
-    return errorResponse('Missing signature', 401);
-  }
-
-  const rawBody = await request.text();
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    return errorResponse('Invalid signature', 401);
-  }
+  const auth = await authorizeClient(request, rawUserId, 'upload');
+  if (auth instanceof Response) return auth;
+  const { userId, rawBody } = auth;
 
   let body;
   try {
@@ -339,6 +422,11 @@ export async function handleUpload(request, rawUserId) {
 
   const alt = typeof rawAlt === 'string' ? rawAlt.trim().slice(0, 300) : '';
 
+  // El archivo se anota en la cuenta de espacio del usuario: tiene que existir.
+  if (!(await userExists(userId))) {
+    return errorResponse(`El carrusel ${userId} no existe`, 404);
+  }
+
   if (!isLocalImages() && !process.env.BLOB_READ_WRITE_TOKEN) {
     return errorResponse('Almacenamiento no configurado (falta BLOB_READ_WRITE_TOKEN)', 500);
   }
@@ -348,6 +436,8 @@ export async function handleUpload(request, rawUserId) {
     let b64 = data;
     const m = /^data:([^;,]+);base64,/.exec(b64);
     if (m) b64 = b64.slice(m[0].length);
+    // Antes de decodificar: no se reserva memoria para algo que se va a rechazar.
+    if (b64.length > BASE64_MAX_CHARS + 4) return errorResponse(BASE64_TOO_BIG, 413);
 
     let buffer;
     try {
@@ -356,8 +446,8 @@ export async function handleUpload(request, rawUserId) {
       return errorResponse('Contenido base64 inválido', 400);
     }
     if (buffer.length === 0) return errorResponse('Imagen vacía', 400);
-    if (buffer.length > MAX_BYTES) {
-      return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
+    if (buffer.length > BASE64_MAX_BYTES) {
+      return errorResponse(BASE64_TOO_BIG, 413);
     }
 
     const kind = sniffImageType(buffer);
@@ -367,16 +457,16 @@ export async function handleUpload(request, rawUserId) {
 
     try {
       const opt = await optimizeImage(buffer, kind); // WebP de alta calidad
-      const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
-      const stored = await putImage(fileName, opt.buffer, opt.type, request);
+      const stored = await saveUserFile(userId, opt.buffer, opt.type, opt.ext, request);
       return successResponse(
         { url: stored.url, pathname: stored.pathname, contentType: kind.type, alt, userId },
         'Image stored permanently'
       );
     } catch (err) {
+      const full = quotaErrorResponse(err);
+      if (full) return full;
       console.error('POST /api/upload/:userId (binary) error:', err);
-      const detail = [err?.name, err?.message].filter(Boolean).join(' | ');
-      return errorResponse(`Error al guardar la imagen: ${detail || 'error'}`, 500);
+      return errorResponse('Error al guardar la imagen', 500);
     }
   }
 
@@ -397,9 +487,23 @@ export async function handleUpload(request, rawUserId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   let phase = 'download';
+  let tmp = null;
 
   try {
-    const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    // Las redirecciones se siguen a mano: cada salto tiene que ser a un host permitido
+    // (si no, un host permitido podría redirigir a una dirección interna).
+    let res;
+    let target = url;
+    for (let hop = 0; ; hop++) {
+      res = await fetch(target, { signal: controller.signal, redirect: 'manual' });
+      if (res.status < 300 || res.status >= 400) break;
+      const next = res.headers.get('location');
+      if (!next || hop >= 3) return errorResponse('Demasiadas redirecciones al descargar la imagen', 502);
+      target = new URL(next, target).toString();
+      if (!isHttpUrl(target) || (!isLocal() && !isHostAllowed(target))) {
+        return errorResponse('La imagen redirige a un host no permitido', 400);
+      }
+    }
     if (!res.ok) {
       return errorResponse(`No se pudo descargar la imagen (${res.status})`, 502);
     }
@@ -414,21 +518,23 @@ export async function handleUpload(request, rawUserId) {
       return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
     }
 
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length > MAX_BYTES) {
+    // La imagen se escribe a un temporal mientras llega (no se carga entera en memoria).
+    if (!res.body) return errorResponse('La URL no devuelve una imagen', 400);
+    const dir = uploadTempDir();
+    tmp = join(dir, `.tmp-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const size = await writeCapped(Readable.fromWeb(res.body), tmp, MAX_BYTES);
+    if (size === -1) {
       return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
     }
+    if (size === 0) return errorResponse('Imagen vacía', 400);
 
-    // No confiar en el content-type remoto: verificar que los bytes sean una imagen.
-    const kind = sniffImageType(buffer);
-    if (!kind) {
+    // No confiar en el content-type remoto: saveImageFromTemp verifica los bytes.
+    phase = 'upload';
+    const stored = await saveImageFromTemp(userId, tmp);
+    if (!stored) {
       return errorResponse('El contenido descargado no es una imagen válida (JPEG, PNG, WebP o GIF)', 400);
     }
-    const opt = await optimizeImage(buffer, kind);
-    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
-
-    phase = 'upload';
-    const stored = await putImage(fileName, opt.buffer, opt.type, request);
 
     return successResponse(
       { url: stored.url, pathname: stored.pathname, contentType: stored.contentType, alt, userId },
@@ -438,13 +544,15 @@ export async function handleUpload(request, rawUserId) {
     if (err.name === 'AbortError') {
       return errorResponse('Tiempo de descarga agotado', 504);
     }
+    const full = quotaErrorResponse(err);
+    if (full) return full;
     console.error(`POST /api/upload/:userId error (${phase}):`, err);
     if (phase === 'upload') {
-      const detail = [err?.name, err?.message, err?.cause?.message].filter(Boolean).join(' | ');
-      return errorResponse(`Error al guardar la imagen: ${detail || 'error'}`, 500);
+      return errorResponse('Error al guardar la imagen', 500);
     }
-    return errorResponse(`No se pudo descargar la imagen: ${err.message}`, 502);
+    return errorResponse('No se pudo descargar la imagen', 502);
   } finally {
     clearTimeout(timer);
+    if (tmp) await cleanupTemp(tmp);
   }
 }
