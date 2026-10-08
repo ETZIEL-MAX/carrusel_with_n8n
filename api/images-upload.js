@@ -1,49 +1,48 @@
 import { randomUUID } from 'crypto';
-import { putImage, isLocalImages, optimizeImage } from './_store.js';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { isLocalImages, uploadTempDir } from './_store.js';
 import {
-  addImage, getUsers, sniffImageType,
-  verifyToken, getTokenFromCookie, checkRateLimit,
+  addImage, getUsers, requireSession, resolveUserId, checkRateLimit, getClientIp,
+  assertFits, saveImageFromTemp, quotaErrorResponse,
   errorResponse, successResponse,
-  isSuperAdmin, isUser,
+  isUser,
 } from './_utils.js';
+import { writeCapped, withUploadSlot, sweepStaleTemps, cleanupTemp } from './_stream.js';
 
-// Manual upload from the admin panel (PC / phone).
-// POST /api/images-upload[?userId=USER2]  multipart/form-data: file=<image>, alt=<optional text>
-// Auth: session cookie. A user uploads to their own carousel; the super-admin must pass ?userId.
-// The browser already resizes to max 1920px, so files are small; the limit stays below
-// Vercel's 4.5 MB request body cap.
+// Subida de imagen desde el panel (PC / celular).
+// POST /api/images-upload[?userId=USER2][&alt=texto]   cuerpo = la imagen tal cual
+// Auth: cookie de sesión. Un usuario sube a su carrusel; el super-admin pasa ?userId.
+//
+// El cuerpo NO se junta en memoria: se escribe a un temporal mientras llega, y de ahí
+// pasa a sharp (WebP) y al carrusel. Por eso el handler recibe el flujo aparte:
+// `handleImageUpload(request, stream)`. El navegador ya reduce la foto a 1920 px.
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_MANUAL_UPLOAD || '30', 10);
-const MAX_BYTES = parseInt(process.env.MANUAL_UPLOAD_MAX_BYTES || String(4 * 1024 * 1024), 10);
+const MAX_BYTES = parseInt(process.env.MANUAL_UPLOAD_MAX_BYTES || String(25 * 1024 * 1024), 10);
+
+const tooBig = () => errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
 
 async function resolveTarget(request) {
-  const token = getTokenFromCookie(request);
-  if (!token) return errorResponse('Unauthorized', 401);
-  const payload = await verifyToken(token);
-  if (!payload || (!isSuperAdmin(payload) && !isUser(payload))) return errorResponse('Forbidden', 403);
+  const auth = await requireSession(request);
+  if (auth instanceof Response) return auth;
+  const { payload } = auth;
 
-  const requested = new URL(request.url).searchParams.get('userId');
-  const requestedId = requested ? requested.trim().toUpperCase() : null;
+  const userId = resolveUserId(request, payload);
+  if (userId instanceof Response || isUser(payload)) return userId;
 
-  if (isUser(payload)) {
-    if (requestedId && requestedId !== payload.userId) return errorResponse('Forbidden', 403);
-    return payload.userId;
-  }
-
-  if (!requestedId || !/^USER\d+$/.test(requestedId)) {
-    return errorResponse('userId required for super-admin', 400);
-  }
   const users = await getUsers();
-  if (!users[requestedId]) return errorResponse('User not found', 404);
-  return requestedId;
+  if (!users[userId]) return errorResponse('User not found', 404);
+  return userId;
 }
 
-export async function POST(request) {
+// `request`: Request sin cuerpo (URL, método y cabeceras). `stream`: el cuerpo (Readable).
+export async function handleImageUpload(request, stream) {
   const userId = await resolveTarget(request);
   if (userId instanceof Response) return userId;
 
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimit = checkRateLimit(`manual-upload:${clientIp}:${userId}`, RATE_LIMIT);
+  const rateLimit = checkRateLimit(`manual-upload:${getClientIp(request)}:${userId}`, RATE_LIMIT);
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429, { resetAt: rateLimit.resetAt });
   }
@@ -52,46 +51,47 @@ export async function POST(request) {
     return errorResponse('Almacenamiento no configurado (falta BLOB_READ_WRITE_TOKEN)', 500);
   }
 
-  const declared = parseInt(request.headers.get('content-length') || '0', 10);
-  if (declared && declared > MAX_BYTES + 64 * 1024) {
-    return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
-  }
+  const declared = parseInt(request.headers.get('content-length') || '0', 10) || 0;
+  if (declared > MAX_BYTES) return tooBig();
+  if (!stream) return errorResponse('Falta la imagen en el cuerpo de la petición', 400);
 
-  let form;
-  try {
-    form = await request.formData();
-  } catch {
-    return errorResponse('Expected multipart/form-data with a "file" field', 400);
-  }
-
-  const file = form.get('file');
-  if (!file || typeof file === 'string' || typeof file.arrayBuffer !== 'function') {
-    return errorResponse('Missing "file" field', 400);
-  }
-
-  const buffer = Buffer.from(await file.arrayBuffer());
-  if (buffer.length === 0) return errorResponse('Empty file', 400);
-  if (buffer.length > MAX_BYTES) {
-    return errorResponse(`Imagen demasiado grande (máx ${Math.round(MAX_BYTES / 1048576)} MB)`, 413);
-  }
-
-  const kind = sniffImageType(buffer);
-  if (!kind) return errorResponse('El archivo no es una imagen válida (JPEG, PNG, WebP o GIF)', 400);
-
-  const rawAlt = form.get('alt');
+  const params = new URL(request.url).searchParams;
+  const rawAlt = params.get('alt');
   const alt = typeof rawAlt === 'string' ? rawAlt.trim().slice(0, 300) : '';
 
+  const dir = uploadTempDir();
+  // Nombre con punto inicial: el servidor nunca sirve estos temporales.
+  const tmp = join(dir, `.tmp-${randomUUID()}`);
   try {
-    const opt = await optimizeImage(buffer, kind); // WebP de alta calidad
-    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${opt.ext}`;
-    const stored = await putImage(fileName, opt.buffer, opt.type, request);
+    await mkdir(dir, { recursive: true });
+    await sweepStaleTemps(dir);
+    // ¿Cabe en su espacio? Con el tamaño declarado antes de recibir nada...
+    await assertFits(userId, declared);
+
+    // ...y con tope real mientras llega (el tamaño declarado puede no venir o mentir).
+    const size = await withUploadSlot(() => writeCapped(stream, tmp, MAX_BYTES));
+    if (size === -1) return tooBig();
+    if (size === 0) return errorResponse('Imagen vacía', 400);
+
+    const stored = await saveImageFromTemp(userId, tmp);
+    if (!stored) return errorResponse('El archivo no es una imagen válida (JPEG, PNG, WebP o GIF)', 400);
+
     const image = await addImage(userId, { url: stored.url, alt });
     return successResponse({ ...image, userId }, 'Image uploaded');
   } catch (err) {
+    const full = quotaErrorResponse(err);
+    if (full) return full;
     console.error('POST /api/images-upload error:', err);
-    const detail = [err?.name, err?.message].filter(Boolean).join(' | ');
-    return errorResponse(`Error al guardar la imagen: ${detail || 'error'}`, 500);
+    return errorResponse('Error al guardar la imagen', 500);
+  } finally {
+    // Siempre: si el archivo ya se movió, no existe y no pasa nada.
+    await cleanupTemp(tmp);
   }
+}
+
+// En Vercel el cuerpo llega como Web stream (limitado a 4.5 MB por la plataforma).
+export async function POST(request) {
+  return handleImageUpload(request, request.body ? Readable.fromWeb(request.body) : null);
 }
 
 export async function OPTIONS() {

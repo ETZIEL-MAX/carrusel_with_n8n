@@ -21,3 +21,6 @@ _itest.mjs
 # Playwright
 playwright-report/
 test-results/
+
+# n8n: export del flujo (contiene secretos)
+n8n/.work/

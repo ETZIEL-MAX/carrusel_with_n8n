@@ -9,6 +9,7 @@
     "dev": "node scripts/server.mjs",
     "dev:local": "node scripts/server.mjs",
     "test": "node scripts/test-e2e.mjs",
+    "test:n8n": "node scripts/test-n8n.mjs",
     "test:ui": "playwright test",
     "test:prod": "node tests/run-prod.mjs",
     "deploy": "vercel --prod",

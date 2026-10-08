@@ -74,9 +74,23 @@
       </div>
       <div class="admin-actions">
         <button class="btn btn--primary" id="addUserBtn">+ Nuevo usuario</button>
+        <button class="btn" id="superAdminLogoutAllBtn" title="Cierra la sesión de super-admin en todos los dispositivos">Cerrar todas las sesiones</button>
         <button class="btn btn--danger" id="superAdminLogoutBtn">Salir</button>
       </div>
     </header>
+
+    <div class="plan-panel">
+      <form class="plan-card plan-card--row" id="priceForm" novalidate>
+        <div>
+          <label class="plan-card__label" for="priceInput">Costo aproximado por imagen (USD)</label>
+          <p class="hint">Se usa para estimar el gasto de las imágenes generadas de las que el proveedor no reporta tokens.</p>
+        </div>
+        <div class="plan-card__controls">
+          <input type="number" id="priceInput" name="priceInput" min="0" max="100" step="0.01" inputmode="decimal" placeholder="0.06" />
+          <button class="btn" type="submit" id="priceSaveBtn">Guardar</button>
+        </div>
+      </form>
+    </div>
 
     <div id="superAdminGrid" class="image-grid"></div>
     <div id="superAdminEmpty" class="empty" hidden style="position:static; min-height:40vh;">
@@ -96,12 +110,35 @@
         <button class="btn" id="backToUsersBtn" hidden>← Volver a usuarios</button>
         <button class="btn" id="userSettingsBtn" hidden>⚙ Configuración</button>
         <a class="btn" id="userPublicLink" href="/carrusel/USER1" target="_blank" rel="noopener">Ver carrusel público</a>
-        <button class="btn btn--primary" id="uploadImgBtn">⬆ Subir imágenes</button>
+        <button class="btn btn--primary touch-only" id="cameraBtn" type="button">📷 Tomar foto</button>
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden />
+        <button class="btn btn--primary" id="uploadImgBtn">⬆ Subir fotos</button>
         <input type="file" id="uploadImgInput" accept="image/*" multiple hidden />
         <button class="btn" id="addImgBtn">+ Añadir por URL</button>
         <button class="btn btn--danger" id="userLogoutBtn">Salir</button>
       </div>
     </header>
+
+    <div class="plan-panel" id="planPanel" hidden>
+      <div class="plan-card">
+        <div class="plan-card__head">
+          <span class="plan-card__label">Espacio</span>
+          <span class="plan-card__value" id="storageText">—</span>
+        </div>
+        <div class="meter" id="storageMeter" role="progressbar" aria-label="Espacio usado" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="meter__fill" id="storageFill"></div>
+        </div>
+        <p class="hint" id="storageHint"></p>
+      </div>
+      <div class="plan-card">
+        <div class="plan-card__head">
+          <span class="plan-card__label">Consumo de generación</span>
+          <select class="plan-card__select" id="usageMonth" aria-label="Mes del consumo"></select>
+        </div>
+        <div class="usage-stats" id="usageStats"></div>
+        <p class="hint" id="usageHint"></p>
+      </div>
+    </div>
 
     <div class="upload-status" id="uploadStatus" hidden>
       <div class="upload-status__text" id="uploadStatusText">Subiendo…</div>
@@ -111,7 +148,7 @@
     <div id="userGrid" class="image-grid"></div>
     <div id="userGridEmpty" class="empty" hidden style="position:static; min-height:40vh;">
       <h2 class="empty__title">No hay imágenes todavía</h2>
-      <p class="empty__text">Pulsa «Subir imágenes» para elegirlas desde tu PC o móvil, o arrástralas aquí.</p>
+      <p class="empty__text">Pulsa «Subir fotos» para elegirlas desde tu PC o móvil, o arrástralas aquí. En el celular también puedes tomar una foto.</p>
     </div>
   </section>
 
@@ -128,9 +165,9 @@
         <input type="email" id="newUserEmail" name="newUserEmail" placeholder="usuario@ejemplo.com" autocomplete="off" required />
       </div>
       <div class="field" id="newUserPasswordField">
-        <label for="newUserPassword">Contraseña (mín. 6 caracteres)</label>
+        <label for="newUserPassword">Contraseña (mín. 10 caracteres)</label>
         <div style="display:flex; gap:.4rem;">
-          <input type="password" id="newUserPassword" name="newUserPassword" autocomplete="new-password" required minlength="6" style="flex:1;" />
+          <input type="password" id="newUserPassword" name="newUserPassword" autocomplete="new-password" required minlength="10" style="flex:1;" />
           <button class="btn" type="button" id="newUserPwdToggle" title="Mostrar / ocultar" aria-label="Mostrar u ocultar contraseña">👁</button>
           <button class="btn" type="button" id="newUserPwdGen" title="Generar contraseña segura">🎲</button>
         </div>
@@ -143,13 +180,13 @@
     </form>
   </div>
 
-  <!-- Modal: password shown once (super-admin) -->
+  <!-- Modal: password / token shown once (super-admin) -->
   <div class="modal-backdrop" id="pwdRevealBackdrop">
     <div class="modal" role="dialog" aria-modal="true">
       <h2 id="pwdRevealTitle">Contraseña de usuario</h2>
-      <p class="hint">Guárdala ahora: no se podrá volver a ver.</p>
+      <p class="hint" id="pwdRevealHint">Guárdala ahora: no se podrá volver a ver.</p>
       <div class="field">
-        <label for="pwdRevealText">Contraseña</label>
+        <label for="pwdRevealText" id="pwdRevealLabel">Contraseña</label>
         <div style="display:flex; gap:.4rem;">
           <input type="text" id="pwdRevealText" readonly style="flex:1; font-family: var(--font-mono);" />
           <button class="btn btn--primary" type="button" id="pwdRevealCopyBtn">Copiar</button>
@@ -176,14 +213,29 @@
         <input type="email" id="setEmail" name="setEmail" autocomplete="off" required />
       </div>
       <div class="field">
-        <label for="setPassword">Nueva contraseña (opcional, mín. 6)</label>
+        <label for="setPassword">Nueva contraseña (opcional, mín. 10)</label>
         <div style="display:flex; gap:.4rem;">
-          <input type="password" id="setPassword" name="setPassword" autocomplete="new-password" minlength="6" placeholder="Déjala vacía para no cambiarla" style="flex:1;" />
+          <input type="password" id="setPassword" name="setPassword" autocomplete="new-password" minlength="10" placeholder="Déjala vacía para no cambiarla" style="flex:1;" />
           <button class="btn" type="button" id="setPwdToggle" title="Mostrar / ocultar" aria-label="Mostrar u ocultar contraseña">👁</button>
           <button class="btn" type="button" id="setPwdGen" title="Generar contraseña segura">🎲</button>
         </div>
       </div>
       <p class="error-text" id="settingsFormError"></p>
+
+      <div id="planSection">
+        <h3 class="modal__section">Espacio</h3>
+        <div class="field">
+          <label for="setStorageLimit">Límite de almacenamiento (MB)</label>
+          <input type="number" id="setStorageLimit" name="setStorageLimit" min="1" step="1" inputmode="numeric" placeholder="500" />
+          <p class="hint" id="setStorageHint">Déjalo vacío para usar el límite por defecto.</p>
+        </div>
+
+        <h3 class="modal__section">Token de n8n</h3>
+        <p class="hint">Secreto propio de este carrusel: con él n8n firma lo que envía. Se muestra <strong>una sola vez</strong> al generarlo. Para volver a verlo hay que regenerarlo, y el anterior deja de funcionar.</p>
+        <div class="field">
+          <div class="copy-row"><code class="copy-code" id="tokenStatus">Sin token</code><button class="btn" type="button" id="tokenGenBtn">Generar token</button></div>
+        </div>
+      </div>
 
       <div id="webhookDocs">
         <h3 class="modal__section">Webhook n8n</h3>
@@ -204,7 +256,7 @@
           <label>Re-hospedar imagen temporal (POST, misma firma)</label>
           <div class="copy-row"><code class="copy-code" id="whUpload"></code><button class="btn" type="button" data-copy="whUpload">Copiar</button></div>
         </div>
-        <p class="hint">La firma <code>X-Webhook-Secret</code> es el HMAC-SHA256 (hex) del cuerpo exacto, usando la variable <code>WEBHOOK_SECRET</code> del servidor. Por seguridad su valor no se muestra aquí; configura la misma en n8n (ver <code>docs/N8N.md</code>).</p>
+        <p class="hint">Con token: <code>X-Webhook-Timestamp</code> es la hora en segundos (Unix) y <code>X-Webhook-Secret</code> es el HMAC-SHA256 (hex) de <code>timestamp + "." + cuerpo exacto</code>, usando el token de este carrusel. Mientras el carrusel no tenga token se acepta la firma antigua (solo el cuerpo, con <code>WEBHOOK_SECRET</code>). Ver <code>docs/N8N.md</code>.</p>
 
         <h3 class="modal__section">Copiar para n8n</h3>
         <p class="hint">Pega este bloque campo por campo en el nodo <strong>HTTP Request</strong> de n8n. El cuerpo ya trae las imágenes actuales de este carrusel y <code>"mode": "append"</code> (agregar sin borrar). Usa <code>"replace"</code> si quieres reemplazar todo.</p>
@@ -245,6 +297,7 @@
 
       <div class="modal__foot">
         <button class="btn" type="button" id="settingsCancelBtn">Cerrar</button>
+        <button class="btn" type="button" id="selfLogoutAllBtn" hidden title="Cierra tu sesión en todos los dispositivos">Cerrar todas las sesiones</button>
         <button class="btn btn--generate" type="button" id="generateImagesBtn" hidden>⚡ Generar imágenes</button>
         <button class="btn btn--primary" type="submit" id="settingsSaveGenBtn" hidden>Guardar configuración</button>
         <button class="btn btn--primary" type="submit" id="settingsSaveBtn">Guardar cambios</button>

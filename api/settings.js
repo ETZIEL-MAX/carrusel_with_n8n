@@ -1,10 +1,8 @@
 import {
-  verifyToken,
-  getTokenFromCookie,
+  requireSession,
   checkRateLimit,
-  isSuperAdmin,
-  isUser,
-  getTargetUserId,
+  getClientIp,
+  resolveUserId,
   getGenerationSettings,
   updateUserSettings,
   errorResponse,
@@ -13,22 +11,16 @@ import {
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_SETTINGS || '30', 10);
 
-async function requireAuth(request) {
-  const token = getTokenFromCookie(request);
-  if (!token) return errorResponse('Unauthorized', 401);
-  const payload = await verifyToken(token);
-  if (!payload || (!isSuperAdmin(payload) && !isUser(payload))) return errorResponse('Forbidden', 403);
-  return { payload };
-}
+const requireAuth = (request) => requireSession(request);
 
 export async function GET(request) {
   const auth = await requireAuth(request);
   if (auth instanceof Response) return auth;
 
-  const userId = getTargetUserId(request, auth.payload);
-  if (!userId) return errorResponse('userId required for super-admin', 400);
+  const userId = resolveUserId(request, auth.payload);
+  if (userId instanceof Response) return userId;
 
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rl = checkRateLimit(`settings:get:${clientIp}:${userId}`, RATE_LIMIT);
   if (!rl.allowed) return errorResponse('Rate limit exceeded', 429, { resetAt: rl.resetAt });
 
@@ -46,10 +38,10 @@ export async function PATCH(request) {
   const auth = await requireAuth(request);
   if (auth instanceof Response) return auth;
 
-  const userId = getTargetUserId(request, auth.payload);
-  if (!userId) return errorResponse('userId required for super-admin', 400);
+  const userId = resolveUserId(request, auth.payload);
+  if (userId instanceof Response) return userId;
 
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rl = checkRateLimit(`settings:patch:${clientIp}:${userId}`, RATE_LIMIT);
   if (!rl.allowed) return errorResponse('Rate limit exceeded', 429, { resetAt: rl.resetAt });
 

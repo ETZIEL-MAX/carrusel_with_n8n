@@ -12,8 +12,6 @@
   let images = [];
   let current = 0;
   let timer = null;
-  let progressTimer = null;
-  let progressStart = 0;
   let paused = false;
   let currentId = null;
   let userId = null;
@@ -45,16 +43,14 @@ function escapeHtml(str) {
 
     emptyEl.hidden = true;
 
+    // Aquí no se pide ningún archivo: cada imagen lleva su dirección en `data-src` y
+    // `loadWindow` le pone el `src` solo a lo que se va a ver (ver más abajo).
     slidesEl.innerHTML = images
       .map((img, i) => `
         <div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
-          <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" loading="${i === 0 ? 'eager' : 'lazy'}" decoding="async" draggable="false" />
+          <img data-src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" decoding="async" draggable="false" />
         </div>`)
       .join('');
-
-    // Mostrar cada imagen SOLO cuando está completamente decodificada.
-    // Nunca a medias => se acabó ver media imagen con el resto en negro.
-    slidesEl.querySelectorAll('.slide img').forEach((img) => revealWhenReady(img));
 
     dotsEl.innerHTML = images
       .map((_, i) => `<button class="dot" data-index="${i}" role="tab" aria-label="Diapositiva ${i + 1}"></button>`)
@@ -71,18 +67,6 @@ function escapeHtml(str) {
     startAutoplay();
   }
 
-  function preload(url) {
-    if (!url) return;
-    const im = new Image();
-    im.decoding = 'async';
-    im.src = url;
-    // Decodificar por adelantado: al mostrarse ya está lista (sin tirón ni negro).
-    if (typeof im.decode === 'function') im.decode().catch(() => {});
-  }
-
-  // Marca la imagen como lista (fundido) SOLO cuando está 100% decodificada.
-  // Si falla (hipo de red/CDN), reintenta con cache-bust y, en última instancia,
-  // la muestra igual para no dejarla invisible.
   // Ajusta cómo se muestra cada imagen según su orientación y la de la pantalla.
   // Coincide (vertical/vertical o horizontal/horizontal) -> cover (llena).
   // No coincide -> contain (se ve completa, sin cortar). view='rotate' -> gira 90° y llena.
@@ -111,14 +95,22 @@ function escapeHtml(str) {
   window.addEventListener('resize', applyFitAll);
   window.addEventListener('orientationchange', applyFitAll);
 
+  // Marca la imagen como lista (fundido) SOLO cuando está 100% decodificada.
+  // Si falla (hipo de red/CDN), reintenta con cache-bust y, en última instancia,
+  // la muestra igual para no dejarla invisible.
   function revealWhenReady(img) {
-    const reveal = () => { img.classList.add('is-loaded'); applyFit(img); };
+    const loaded = () => Boolean(img.getAttribute('src')); // pudo descargarse mientras tanto
+    const reveal = () => { if (!loaded()) return; img.classList.add('is-loaded'); applyFit(img); };
     const fail = () => {
+      if (!loaded()) return;
       const tries = Number(img.dataset.retry || 0);
       if (tries < 2) {
         img.dataset.retry = String(tries + 1);
-        const base = (img.getAttribute('src') || '').split('#')[0].split('?')[0];
-        setTimeout(() => { img.src = `${base}?r=${Date.now()}`; revealWhenReady(img); }, 500 * (tries + 1));
+        setTimeout(() => {
+          if (!loaded()) return;
+          img.src = `${img.dataset.src.split('#')[0].split('?')[0]}?r=${Date.now()}`;
+          revealWhenReady(img);
+        }, 500 * (tries + 1));
       } else {
         reveal();
       }
@@ -133,19 +125,46 @@ function escapeHtml(str) {
     }
   }
 
+  // ==================== Solo se carga lo que se va a ver ====================
+  // Una TV tiene poca memoria. Por eso solo la diapositiva actual y sus dos vecinas tienen
+  // su imagen cargada. Al resto se le quita el `src` para que el navegador libere memoria.
+
+  function inWindow(i) {
+    const n = images.length;
+    if (n <= 3) return true;
+    return i === current || i === (current + 1) % n || i === (current - 1 + n) % n;
+  }
+
+  function loadImage(img) {
+    if (img.getAttribute('src')) return;
+    delete img.dataset.retry;
+    img.src = img.dataset.src;
+    revealWhenReady(img);
+  }
+
+  function unloadImage(img) {
+    if (!img.getAttribute('src')) return;
+    img.removeAttribute('src');
+    img.classList.remove('is-loaded');
+  }
+
+  function loadWindow() {
+    slidesEl.querySelectorAll('.slide img').forEach((img) => {
+      const i = Number(img.closest('.slide').dataset.index);
+      if (inWindow(i)) loadImage(img);
+      else unloadImage(img);
+    });
+  }
+
   function show(index, immediate = false) {
     if (images.length === 0) return;
     current = (index + images.length) % images.length;
     currentId = images[current].id;
 
-    // Precargar la siguiente (y anterior) para que la transición no salga en negro.
-    if (images.length > 1) {
-      preload(images[(current + 1) % images.length]?.url);
-      preload(images[(current - 1 + images.length) % images.length]?.url);
-    }
-
     const slides = slidesEl.querySelectorAll('.slide');
     slides.forEach((s, i) => s.classList.toggle('is-active', i === current));
+    // Carga la actual y sus vecinas (así la transición no sale en negro) y suelta el resto.
+    loadWindow();
 
     const dots = dotsEl.querySelectorAll('.dot');
     dots.forEach((d, i) => {
@@ -184,23 +203,21 @@ function escapeHtml(str) {
   function stopAutoplay() {
     clearTimeout(timer);
     timer = null;
-    clearInterval(progressTimer);
-    progressTimer = null;
+    // La barra se queda donde iba.
+    const at = getComputedStyle(progressFill).transform;
+    progressFill.style.transition = 'none';
+    progressFill.style.transform = at && at !== 'none' ? at : 'scaleX(0)';
   }
 
+  // La barra avanza con una transición CSS: el navegador la anima sin ejecutar
+  // JavaScript en cada cuadro (antes era un temporizador cada 40 ms).
   function restartProgress() {
-    clearInterval(progressTimer);
-    if (prefersReduced || paused || images.length < 2) {
-      progressFill.style.width = '0%';
-      return;
-    }
-    progressStart = performance.now();
-    progressFill.style.width = '0%';
-    const total = currentMs();
-    progressTimer = setInterval(() => {
-      const pct = Math.min((performance.now() - progressStart) / total, 1) * 100;
-      progressFill.style.width = pct + '%';
-    }, 40);
+    progressFill.style.transition = 'none';
+    progressFill.style.transform = 'scaleX(0)';
+    if (prefersReduced || paused || images.length < 2) return;
+    void progressFill.offsetWidth; // aplica el 0 antes de empezar a animar
+    progressFill.style.transition = `transform ${Math.round(currentMs())}ms linear`;
+    progressFill.style.transform = 'scaleX(1)';
   }
 
   function pause() {
@@ -274,11 +291,34 @@ function escapeHtml(str) {
     build();
   }
 
+  // ==================== Versión nueva del sitio ====================
+  // Una TV deja el carrusel abierto por días. La lista se refresca sola, pero el código
+  // no: sin esto seguiría con el viejo tras una actualización. El servidor manda su
+  // versión en cada consulta; si no es la de esta página, se recarga.
+  const OWN_BUILD = document.querySelector('meta[name="build"]')?.content || '';
+  const RELOAD_KEY = 'carrusel:reloadAt';
+  const RELOAD_MIN_MS = 2 * 60 * 1000; // como mucho una recarga cada 2 min: nunca en bucle
+
+  function reloadIfNewBuild(res) {
+    const serverBuild = res.headers.get('x-build');
+    if (!serverBuild || !OWN_BUILD || OWN_BUILD === '__BUILD__' || serverBuild === OWN_BUILD) return;
+    if (res.headers.get('x-from-cache')) return; // respuesta guardada (sin red): no dice cuál es la versión actual
+    try {
+      const last = Number(sessionStorage.getItem(RELOAD_KEY) || 0);
+      if (Date.now() - last < RELOAD_MIN_MS) return;
+      sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+    } catch {
+      return; // sin storage no se puede garantizar que no haya bucle: mejor no recargar
+    }
+    window.location.reload();
+  }
+
   async function refresh() {
     try {
       if (!userId) return;
       const res = await fetch(`/api/carrusel?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
       if (!res.ok) throw new Error('fetch failed');
+      reloadIfNewBuild(res);
       const data = await res.json();
       const list = data?.data?.images ?? data?.images;
       const incoming = Array.isArray(list) ? list : [];

@@ -20,11 +20,16 @@ test.beforeAll(async ({ playwright }, testInfo) => {
   await api.dispose();
 });
 
+// El carrusel solo carga la diapositiva actual y sus dos vecinas (memoria de la TV).
+// "Listo" = todas las que tienen `src` están completas y visibles.
 const allLoaded = (page) =>
   page.evaluate(() => {
-    const imgs = [...document.querySelectorAll('.slide img')];
+    const imgs = [...document.querySelectorAll('.slide img')].filter((i) => i.getAttribute('src'));
     return imgs.length > 0 && imgs.every((i) => i.complete && i.naturalWidth > 0 && i.classList.contains('is-loaded'));
   });
+const loadedIndexes = (page) =>
+  page.locator('.slide img').evaluateAll((els) =>
+    els.filter((e) => e.getAttribute('src')).map((e) => Number(e.closest('.slide').dataset.index)));
 
 test('el carrusel carga todas las imágenes completas y sin errores', async ({ page }) => {
   const w = watchPage(page);
@@ -33,8 +38,16 @@ test('el carrusel carga todas las imágenes completas y sin errores', async ({ p
   await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
 
   // Las subidas grandes se guardan como WebP
-  const srcs = await page.locator('.slide img').evaluateAll((els) => els.map((e) => e.getAttribute('src')));
+  const srcs = await page.locator('.slide img').evaluateAll((els) => els.map((e) => e.dataset.src));
   for (const s of srcs) expect(s).toMatch(/^\/uploads\/[\w.-]+\.webp$/);
+
+  // De 4 diapositivas solo están cargadas la actual (0), la siguiente (1) y la anterior (3)
+  expect(await loadedIndexes(page)).toEqual([0, 1, 3]);
+  // Al avanzar, la ventana se mueve: entra la 2 y se suelta la 3
+  await page.locator('.dot[data-index="1"]').click();
+  await expect.poll(() => loadedIndexes(page)).toEqual([0, 1, 2]);
+  await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
+  expect(await page.locator('.slide[data-index="3"] img').evaluate((e) => e.classList.contains('is-loaded'))).toBe(false);
 
   // Sin scroll horizontal (nada se sale de la pantalla)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -49,22 +62,24 @@ test('cada imagen se ajusta según su orientación y la de la pantalla', async (
   await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
 
   const portraitScreen = await page.evaluate(() => matchMedia('(orientation: portrait)').matches);
-  const cls = await page.locator('.slide img').evaluateAll((els) => els.map((e) => e.className));
-
-  // horizontal: cubre en pantalla horizontal, se ve completa (contain) en vertical
-  expect(cls[0]).toContain(portraitScreen ? 'fit-contain' : 'fit-cover');
-  // vertical: al revés
-  expect(cls[1]).toContain(portraitScreen ? 'fit-cover' : 'fit-contain');
-  // "Girar 90°"
-  expect(cls[2]).toContain('is-rotated');
-  // cuadrado: proporción muy distinta a la pantalla en todos los casos => se ve completo
-  expect(cls[3]).toContain('fit-contain');
+  const expected = [
+    // horizontal: cubre en pantalla horizontal, se ve completa (contain) en vertical
+    portraitScreen ? 'fit-contain' : 'fit-cover',
+    // vertical: al revés
+    portraitScreen ? 'fit-cover' : 'fit-contain',
+    // "Girar 90°"
+    'is-rotated',
+    // cuadrado: proporción muy distinta a la pantalla en todos los casos => se ve completo
+    'fit-contain',
+  ];
 
   const vp = page.viewportSize();
   for (let i = 0; i < 4; i++) {
     await page.locator(`.dot[data-index="${i}"]`).click();
     const img = page.locator(`.slide[data-index="${i}"] img`);
     await expect(page.locator(`.slide[data-index="${i}"]`)).toHaveClass(/is-active/);
+    await expect(img).toHaveClass(/is-loaded/); // el ajuste se decide al cargar cada imagen
+    expect(await img.getAttribute('class')).toContain(expected[i]);
     await page.waitForTimeout(1300); // fundido terminado
     // La imagen activa ocupa toda la pantalla (también la girada)
     const box = await img.boundingBox();
@@ -105,7 +120,9 @@ test.describe('duración por imagen', () => {
     // La segunda no tiene duración propia: usa los 30 s, así que sigue activa.
     await page.waitForTimeout(4000);
     await expect(page.locator('.slide[data-index="1"]')).toHaveClass(/is-active/);
-    const pct = await page.locator('#progressFill').evaluate((el) => parseFloat(el.style.width));
+    // La barra avanza por CSS (escala): se mide lo que ocupa respecto a su pista.
+    const pct = await page.locator('#progressFill').evaluate((el) =>
+      (el.getBoundingClientRect().width / el.parentElement.getBoundingClientRect().width) * 100);
     expect(pct).toBeGreaterThan(5);
     expect(pct).toBeLessThan(40);
   });

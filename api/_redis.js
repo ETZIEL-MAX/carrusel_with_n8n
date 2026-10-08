@@ -105,3 +105,47 @@ export async function delKey(key) {
   await command('DEL', key);
   return true;
 }
+// ==================== Operaciones atómicas (contadores, hashes, llaves con TTL) ====================
+
+export async function incrBy(key, amount = 1) {
+  return Number(await command('INCRBY', key, String(amount)));
+}
+
+export async function expire(key, seconds) {
+  await command('EXPIRE', key, String(seconds));
+  return true;
+}
+
+// Crea la llave solo si no existe. Devuelve true si se creó.
+export async function setNx(key, value, ttlSeconds) {
+  const res = await command('SET', key, String(value), 'EX', String(ttlSeconds), 'NX');
+  return res === 'OK';
+}
+
+export async function exists(key) {
+  return Number(await command('EXISTS', key)) > 0;
+}
+
+export async function hSet(key, field, value) {
+  await command('HSET', key, field, String(value));
+  return true;
+}
+
+export async function hDel(key, field) {
+  await command('HDEL', key, field);
+  return true;
+}
+
+export async function hIncrBy(key, field, amount = 1) {
+  return Number(await command('HINCRBY', key, field, String(amount)));
+}
+
+// Devuelve siempre un objeto { campo: valor } (ioredis y Upstash REST dan un array plano).
+export async function hGetAll(key) {
+  const raw = await command('HGETALL', key);
+  if (!raw) return {};
+  if (!Array.isArray(raw)) return typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (let i = 0; i + 1 < raw.length; i += 2) out[raw[i]] = raw[i + 1];
+  return out;
+}

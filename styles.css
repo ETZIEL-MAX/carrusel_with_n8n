@@ -148,7 +148,10 @@ textarea:focus-visible {
 
 .progress__fill {
   height: 100%;
-  width: 0;
+  width: 100%;
+  /* Avanza escalando (lo anima el navegador solo, sin recalcular la página). */
+  transform: scaleX(0);
+  transform-origin: left center;
   background: var(--accent);
   box-shadow: 0 0 14px var(--accent);
 }
@@ -250,6 +253,11 @@ body.admin {
   align-items: center;
 }
 
+a.btn {
+  color: inherit;
+  text-decoration: none;
+}
+
 .btn {
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -335,6 +343,139 @@ body.admin {
 }
 
 /* Manual upload */
+/* Solo en pantallas táctiles (celular / tablet): cámara y flechas para reordenar. */
+.touch-only {
+  display: none !important;
+}
+@media (hover: none) and (pointer: coarse) {
+  .touch-only {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+  }
+}
+.icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+
+/* Espacio usado y consumo (panel del cliente y del super-admin) */
+.plan-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin: 0 0 1.2rem;
+}
+.plan-card {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  display: grid;
+  gap: 0.6rem;
+  align-content: start;
+}
+.plan-card--row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1rem;
+}
+.plan-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+.plan-card__label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.plan-card__value {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+.plan-card__controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.plan-card__controls input {
+  width: 7rem;
+}
+.plan-card__controls input,
+.plan-card__select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.plan-card__controls input:focus-visible,
+.plan-card__select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.meter__fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.4s var(--ease);
+}
+.meter.is-warn .meter__fill {
+  background: #f08c2e;
+}
+.meter.is-full .meter__fill {
+  background: var(--danger);
+}
+.usage-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 0.6rem;
+}
+.usage-stat {
+  display: grid;
+  gap: 0.15rem;
+}
+.usage-stat__value {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.usage-stat__label {
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+}
+.user-card__storage {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+.user-card__storage .meter {
+  height: 4px;
+}
+@media (max-width: 640px) {
+  .plan-card--row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .upload-status {
   margin: 0 0 1.2rem;
   padding: 0.8rem 1rem;
@@ -791,6 +932,8 @@ body.admin {
 
 .field {
   display: grid;
+  /* minmax(0, …): un bloque de código largo no ensancha el campo (ni el modal). */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.5rem;
 }
 
@@ -847,6 +990,11 @@ body.admin {
   transition: opacity 0.3s var(--ease);
 }
 
+/* El aviso de "se muestra una sola vez" puede abrirse encima de Ajustes. */
+#pwdRevealBackdrop {
+  z-index: 110;
+}
+
 .modal-backdrop.is-open {
   opacity: 1;
   pointer-events: auto;
@@ -886,6 +1034,8 @@ body.admin {
   max-width: 640px;
   max-height: calc(100vh - 3rem);
   overflow-y: auto;
+  /* Sin esto un bloque de código largo ensancha la columna y aparece scroll horizontal. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .modal__section {
@@ -1205,5 +1355,114 @@ body.admin {
 @keyframes shimmer {
   to {
     background-position: -200% 0;
+  }
+}
+
+/* ==================== PANEL EN CELULAR ==================== */
+@media (max-width: 640px) {
+  /* Cabecera: botones en rejilla de 2 columnas, cómodos para el dedo. */
+  .admin-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    width: 100%;
+  }
+  .admin-actions .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 46px;
+    padding: 0.6rem 0.5rem;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.25;
+  }
+  /* Lo que más se usa, arriba; salir, al final. */
+  .admin-actions .btn--primary {
+    order: -1;
+    min-height: 52px;
+  }
+  .admin-actions .btn--danger {
+    order: 10;
+  }
+  .admin-header {
+    padding-bottom: 1.2rem;
+    margin-bottom: 1.4rem;
+  }
+  .admin-shell {
+    padding: 1rem;
+  }
+
+  /* Tarjetas: sin las mini vistas (ocupan media pantalla) y con botones más grandes. */
+  .image-card__previews {
+    display: none;
+  }
+  .image-card {
+    cursor: default;
+  }
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+  }
+  .image-card__foot {
+    flex-wrap: wrap;
+  }
+
+  /* Modales a pantalla completa, con los botones siempre a la vista. */
+  .modal-backdrop {
+    padding: 0;
+    place-items: stretch;
+  }
+  .modal,
+  .modal--wide {
+    max-width: none;
+    max-height: 100dvh;
+    min-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    padding: 1.2rem 1.2rem 0;
+    overflow-y: auto;
+    align-content: start;
+  }
+  .modal__foot {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    flex-wrap: wrap;
+    margin: 0 -1.2rem;
+    padding: 0.8rem 1.2rem calc(0.8rem + env(safe-area-inset-bottom));
+    background: var(--bg-elev);
+    border-top: 1px solid var(--line);
+  }
+  .modal__foot .btn {
+    flex: 1 1 40%;
+    min-height: 46px;
+    white-space: normal;
+  }
+  .copy-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* 16 px: iOS no hace zoom al enfocar un campo. */
+  .field input,
+  .field textarea,
+  .plan-card__select,
+  .plan-card__controls input {
+    font-size: 16px;
+  }
+  .plan-card__controls {
+    flex-wrap: wrap;
+  }
+  .plan-card__controls input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .toast-wrap {
+    left: 1rem;
+    right: 1rem;
+    bottom: 1rem;
   }
 }

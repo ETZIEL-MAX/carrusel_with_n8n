@@ -1,33 +1,15 @@
 import { 
   getImages, addImage, updateImage, deleteImage, reorderImages,
   validateImageData, validateImagePatch,
-  verifyToken, getTokenFromCookie, checkRateLimit,
-  jsonResponse, errorResponse, successResponse,
-  isSuperAdmin, isUser
+  requireSession, checkRateLimit, getClientIp, resolveUserId,
+  errorResponse, successResponse,
 } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
-async function requireAuth(request) {
-  const token = getTokenFromCookie(request);
-  if (!token) return errorResponse('Unauthorized', 401);
-  const payload = await verifyToken(token);
-  if (!payload || (!isSuperAdmin(payload) && !isUser(payload))) return errorResponse('Forbidden', 403);
-  return { payload };
-}
+const requireAuth = (request) => requireSession(request);
 
-function getUserIdFromRequest(request, payload) {
-  if (isSuperAdmin(payload)) {
-    const url = new URL(request.url);
-    const userId = url.searchParams.get('userId');
-    if (!userId) return errorResponse('userId required for super-admin', 400);
-    return userId.toUpperCase();
-  }
-  if (isUser(payload)) {
-    return payload.userId;
-  }
-  return errorResponse('Unable to determine userId', 400);
-}
+const getUserIdFromRequest = resolveUserId;
 
 // GET /api/images - Admin scoped by userId (query param for super-admin, session for user)
 export async function GET(request) {
@@ -37,7 +19,7 @@ export async function GET(request) {
   const userId = await getUserIdFromRequest(request, auth.payload);
   if (userId instanceof Response) return userId;
   
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`images:get:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
@@ -63,7 +45,7 @@ export async function POST(request) {
   const userId = await getUserIdFromRequest(request, auth.payload);
   if (userId instanceof Response) return userId;
   
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`images:post:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
@@ -96,7 +78,7 @@ export async function PATCH(request) {
   const userId = await getUserIdFromRequest(request, auth.payload);
   if (userId instanceof Response) return userId;
   
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`images:patch:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
@@ -146,7 +128,7 @@ export async function DELETE(request) {
   const userId = await getUserIdFromRequest(request, auth.payload);
   if (userId instanceof Response) return userId;
   
-  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+  const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`images:delete:${clientIp}:${userId}`, RATE_LIMIT);
   
   if (!rateLimit.allowed) {
