@@ -124,6 +124,8 @@ const { armarMensajes } = loadAll(['n8n/formato.js', 'n8n/prompt.js'], ['armarMe
 const msgs = armarMensajes({ texto: 'TACOS 3X50', producto: '', ronda: 2, prompt_base: 'OLD PROMPT', colorPalette: ['#ff0000'] }, { ancho: 1080, alto: 1920, formato_texto: 'vertical 9:16, EXACTAMENTE 1080x1920 pixeles' });
 check('mensajes: system + user', msgs.length === 2 && msgs[0].role === 'system' && msgs[1].role === 'user');
 check('system: prohíbe el lado vacío y describe la esquina', /PROHIBIDO dejar una mitad/.test(msgs[0].content) && /esquina INFERIOR DERECHA/.test(msgs[0].content));
+check('esquina del logo: el mismo fondo de la escena, sin pedir un fondo claro ni liso', /mismos colores, luz y textura/.test(msgs[0].content) && !/liso, claro/.test(msgs[0].content) && /ni pálida/.test(msgs[0].content), msgs[0].content.match(/Esa esquina[^.]*\./)?.[0]);
+check('esquina del logo en las reglas del poster: sin blanco ni pálido', /same colors, light and texture/.test(rules) && !/smooth, light/.test(rules) && /white, pale or cut out/.test(rules));
 check('system: el logo no lo genera el modelo y su esquina continúa la escena', /NO generes, dibujes ni insinues ningun logo/.test(msgs[0].content) && /MISMO fondo de la escena continua/.test(msgs[0].content));
 check('system: ya no pide la esquina "completamente vacia"', !/COMPLETAMENTE LIMPIA, CLARA, VACIA/.test(msgs[0].content) && !/agrega que siempre cree/.test(msgs[0].content));
 check('system: lleva el formato y el lienzo exactos', /vertical 9:16, EXACTAMENTE 1080x1920 pixeles/.test(msgs[0].content) && /lienzo 1080x1920/.test(msgs[0].content));
