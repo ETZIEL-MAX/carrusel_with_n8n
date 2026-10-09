@@ -455,6 +455,15 @@ En el flujo lo hacen dos nodos que salen de `Generar Wan` y de `Generar Qwen`:
   lienzo para que corra antes de esperar la aprobación del cliente.
 - Los tokens del modelo de chat (`AI Agent`) no se reportan: el nodo no los expone.
 
+## 13b. Tamaño del póster
+
+El cliente elige formato y resolución en el panel (`defaultOrientation` + `posterResolution`).
+`POST /api/settings-read/USERx` entrega `posterWidth` y `posterHeight`; el flujo los usa tal cual y,
+si faltan (servidor viejo), cae en la tabla Full HD de siempre. Tabla de tamaños en `docs/API.md`
+(sección «Ajustes de generación»).
+
+---
+
 ## 14. Espacio lleno
 
 Cada carrusel tiene un límite de almacenamiento. Si una subida no cabe,

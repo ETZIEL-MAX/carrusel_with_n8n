@@ -52,14 +52,14 @@ export async function PATCH(request) {
     return errorResponse('Invalid JSON', 400);
   }
 
-  const { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration } = body || {};
+  const { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration } = body || {};
 
-  if (googleDriveFolder === undefined && colorPalette === undefined && n8nGenerationWebhook === undefined && defaultOrientation === undefined && slideDuration === undefined) {
+  if (googleDriveFolder === undefined && colorPalette === undefined && n8nGenerationWebhook === undefined && defaultOrientation === undefined && posterResolution === undefined && slideDuration === undefined) {
     return errorResponse('Nothing to update', 400);
   }
 
   try {
-    const updated = await updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration });
+    const updated = await updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration });
     if (!updated) return errorResponse('User not found', 404);
     return successResponse(updated, 'Settings updated');
   } catch (err) {

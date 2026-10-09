@@ -789,6 +789,18 @@ export async function verifyUserPassword(userId, password) {
 export const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
 export const normalizeFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
 
+// Resolución del póster = lado corto en píxeles. Junto con el formato da el tamaño exacto
+// que n8n pide al generador (admin.js y n8n/formato.js llevan la misma tabla).
+export const RESOLUTIONS = ['hd', 'fullhd', '2k', '4k'];
+const RESOLUTION_SHORT_SIDE = { hd: 720, fullhd: 1080, '2k': 1440, '4k': 2160 };
+const FORMAT_RATIO = { horizontal: [16, 9], vertical: [9, 16], cuadrado: [1, 1], horizontal43: [4, 3], vertical34: [3, 4] };
+export const normalizeResolution = (r) => (RESOLUTIONS.includes(r) ? r : 'fullhd');
+export function posterSize(format, resolution) {
+  const [rw, rh] = FORMAT_RATIO[normalizeFormat(format)];
+  const unit = RESOLUTION_SHORT_SIDE[normalizeResolution(resolution)] / Math.min(rw, rh);
+  return { width: Math.round(rw * unit), height: Math.round(rh * unit) };
+}
+
 // Duración de cada diapositiva, en segundos. Cada imagen puede tener la suya
 // (`duration`); si no, se usa la del carrusel (`slideDuration`).
 export const MIN_DURATION = 2;
@@ -809,15 +821,16 @@ export async function getGenerationSettings(userId) {
     colorPalette: u.colorPalette ?? null,
     n8nGenerationWebhook: u.n8nGenerationWebhook ?? null,
     defaultOrientation: normalizeFormat(u.defaultOrientation),
+    posterResolution: normalizeResolution(u.posterResolution),
     slideDuration: normalizeDuration(u.slideDuration) ?? DEFAULT_SLIDE_DURATION,
   };
 }
 
-export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration }) {
+export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration }) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;
-  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration });
+  const errors = validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration });
   if (errors.length) {
     const e = new Error(errors[0]);
     e.code = 'VALIDATION_ERROR';
@@ -825,6 +838,7 @@ export async function updateUserSettings(userId, { googleDriveFolder, colorPalet
     throw e;
   }
   if (defaultOrientation !== undefined) users[id].defaultOrientation = normalizeFormat(defaultOrientation);
+  if (posterResolution !== undefined) users[id].posterResolution = normalizeResolution(posterResolution);
   if (googleDriveFolder !== undefined) users[id].googleDriveFolder = googleDriveFolder || null;
   if (colorPalette !== undefined) users[id].colorPalette = colorPalette || null;
   if (n8nGenerationWebhook !== undefined) users[id].n8nGenerationWebhook = n8nGenerationWebhook || null;
@@ -1117,10 +1131,13 @@ export function validateHexColor(color) {
   return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color.trim());
 }
 
-export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, slideDuration }) {
+export function validateGenerationSettings({ googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration }) {
   const errors = [];
   if (slideDuration != null && !isValidDuration(slideDuration)) {
     errors.push(DURATION_ERROR);
+  }
+  if (posterResolution != null && !RESOLUTIONS.includes(String(posterResolution))) {
+    errors.push(`posterResolution must be one of: ${RESOLUTIONS.join(', ')}`);
   }
   if (defaultOrientation != null && !FORMATS.includes(String(defaultOrientation))) {
     errors.push(`defaultOrientation must be one of: ${FORMATS.join(', ')}`);

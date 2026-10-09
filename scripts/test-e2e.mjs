@@ -347,6 +347,39 @@ async function runTests() {
   r = await fetch(BASE + '/api/carrusel?userId=USER1');
   check('  carrusel publica slideDuration 12', (await r.json()).data?.slideDuration === 12, r.status);
 
+  // Resolución del póster (settings): HD, Full HD, 2K o 4K
+  const settingsReq = (method, payload) => fetch(BASE + '/api/settings?userId=USER1', {
+    method,
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: payload ? J(payload) : undefined,
+  });
+  r = await settingsReq('GET');
+  check('sin posterResolution guardado -> fullhd', (await r.json()).data?.posterResolution === 'fullhd', r.status);
+  r = await settingsReq('PATCH', { posterResolution: '4k', defaultOrientation: 'vertical' });
+  check('PATCH posterResolution 4k', r.status === 200 && (await r.json()).data?.posterResolution === '4k', r.status);
+  r = await settingsReq('PATCH', { posterResolution: '8k' });
+  check('posterResolution inválida -> 400', r.status === 400, r.status);
+  r = await settingsReq('GET');
+  check('  la inválida no cambió la guardada', (await r.json()).data?.posterResolution === '4k', r.status);
+  r = await settingsReq('PATCH', { posterResolution: 'fullhd', defaultOrientation: 'horizontal' });
+  check('  USER1 vuelve a fullhd horizontal', r.status === 200 && (await r.json()).data?.posterResolution === 'fullhd', r.status);
+  {
+    const { posterSize } = await import('../api/_utils.js');
+    const sizes = {
+      'horizontal/hd': [1280, 720], 'horizontal/fullhd': [1920, 1080], 'horizontal/2k': [2560, 1440], 'horizontal/4k': [3840, 2160],
+      'vertical/hd': [720, 1280], 'vertical/2k': [1440, 2560], 'vertical/4k': [2160, 3840],
+      'cuadrado/hd': [720, 720], 'cuadrado/fullhd': [1080, 1080], 'cuadrado/4k': [2160, 2160],
+      'horizontal43/hd': [960, 720], 'horizontal43/fullhd': [1440, 1080], 'horizontal43/2k': [1920, 1440],
+      'vertical34/fullhd': [1080, 1440], 'vertical34/4k': [2160, 2880],
+    };
+    for (const [k, [w, h]] of Object.entries(sizes)) {
+      const [f, res] = k.split('/');
+      const s = posterSize(f, res);
+      check('posterSize ' + k, s.width === w && s.height === h, J(s));
+    }
+    check('posterSize con valores inválidos -> 1920x1080', J(posterSize('x', 'y')) === J({ width: 1920, height: 1080 }), J(posterSize('x', 'y')));
+  }
+
   r = await fetch(BASE + '/api/carrusel?userId=INVALID');
   check('GET /api/carrusel invalid userId -> 400', r.status === 400, r.status);
 
@@ -619,6 +652,11 @@ async function runTests() {
   check('manage con token', cp.status === 200 && cp.json.data?.count === 2, cp.status + ' count=' + cp.json.data?.count);
   cp = await clientPost('/api/settings-read/USER3', token1, '{}');
   check('settings-read con token', cp.status === 200, cp.status);
+  check('  settings-read: Full HD horizontal por defecto', cp.json.data?.posterResolution === 'fullhd' && cp.json.data?.posterWidth === 1920 && cp.json.data?.posterHeight === 1080, J(cp.json.data));
+  r = await adminJson('/api/settings?userId=USER3', 'PATCH', { posterResolution: '4k', defaultOrientation: 'vertical' });
+  cp = await clientPost('/api/settings-read/USER3', token1, '{"n":"tamano"}'); // cuerpo distinto: la misma firma en el mismo segundo es una repetición
+  check('  settings-read entrega el tamaño elegido', cp.json.data?.posterResolution === '4k' && cp.json.data?.posterWidth === 2160 && cp.json.data?.posterHeight === 3840, J(cp.json.data));
+  await adminJson('/api/settings?userId=USER3', 'PATCH', { posterResolution: 'fullhd', defaultOrientation: 'horizontal' });
 
   r = await adminJson('/api/users/token?userId=USER3', 'POST');
   const token2 = (await r.json()).data?.token || '';

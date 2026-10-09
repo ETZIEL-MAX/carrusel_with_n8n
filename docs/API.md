@@ -531,6 +531,24 @@ Sin `userId`, el super-admin recibe `{ "imagePriceUsd": 0.06 }`.
 
 ---
 
+## Ajustes de generación
+
+### `GET /api/settings[?userId=USER2]` · `PATCH /api/settings[?userId=USER2]`
+
+Sesión requerida. Lo que el bot de n8n usa para generar el póster de ese cliente:
+`googleDriveFolder`, `colorPalette` (hasta 5 colores HEX), `slideDuration`, `defaultOrientation` y
+`posterResolution`.
+
+- `defaultOrientation`: `horizontal` (16:9), `vertical` (9:16), `cuadrado` (1:1), `horizontal43` (4:3) o `vertical34` (3:4).
+- `posterResolution`: `hd` (lado corto 720), `fullhd` (1080, por defecto), `2k` (1440) o `4k` (2160). Otro valor → `400`.
+- Juntos dan el tamaño del póster, por ejemplo `horizontal` + `4k` = 3840×2160 y `vertical34` + `2k` = 1080×1440.
+  Un cliente que nunca eligió resolución recibe `fullhd`, igual que antes.
+
+`POST /api/settings-read/USER2` (firmado, desde n8n) devuelve además de esos datos
+`posterWidth` y `posterHeight`, ya calculados.
+
+---
+
 ## Sesiones
 
 - La cookie lleva un identificador de sesión. `DELETE /api/auth` la revoca: una copia

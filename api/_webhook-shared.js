@@ -16,7 +16,7 @@ import {
   MIN_DURATION, MAX_DURATION, DEFAULT_SLIDE_DURATION,
   verifyClientSignature, clientSignatureHasher, isHttpUrl, sniffImageType, normalizeUserId, getClientIp,
   saveUserFile, saveImageFromTemp, quotaErrorResponse, recordUsage, getUsageSummary, USAGE_KINDS,
-  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat,
+  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat, normalizeResolution, posterSize,
 } from './_utils.js';
 import { isLocal, isLocalImages, optimizeImage, uploadTempDir } from './_store.js';
 import { writeCapped, withUploadSlot, cleanupTemp } from './_stream.js';
@@ -184,12 +184,16 @@ export async function handleSettingsRead(request, rawUserId) {
     return errorResponse('User not found', 404);
   }
 
+  const size = posterSize(settings.defaultOrientation, settings.posterResolution);
   return successResponse(
     {
       userId,
       googleDriveFolder: settings.googleDriveFolder || '',
       colorPalette: Array.isArray(settings.colorPalette) ? settings.colorPalette : [],
       defaultOrientation: normalizeFormat(settings.defaultOrientation),
+      posterResolution: normalizeResolution(settings.posterResolution),
+      posterWidth: size.width,
+      posterHeight: size.height,
     },
     'Settings'
   );
