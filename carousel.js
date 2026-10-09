@@ -48,6 +48,7 @@ function escapeHtml(str) {
     slidesEl.innerHTML = images
       .map((img, i) => `
         <div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
+          <div class="slide__bg" aria-hidden="true"></div>
           <img data-src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" decoding="async" draggable="false" />
         </div>`)
       .join('');
@@ -74,11 +75,13 @@ function escapeHtml(str) {
     if (!img) return;
     const view = img.dataset.view || 'auto';
     img.classList.remove('is-rotated', 'fit-contain', 'fit-cover');
-    if (view === 'rotate') { img.classList.add('is-rotated'); return; }
+    if (view === 'rotate') { img.classList.add('is-rotated'); setBlur(img, false); return; }
     const portraitScreen = window.matchMedia('(orientation: portrait)').matches;
     if (view === 'vertical' || view === 'horizontal') {
       // Forzado desde el admin: llena solo si coincide con la orientación de la pantalla.
-      img.classList.add((view === 'vertical') === portraitScreen ? 'fit-cover' : 'fit-contain');
+      const fills = (view === 'vertical') === portraitScreen;
+      img.classList.add(fills ? 'fit-cover' : 'fit-contain');
+      setBlur(img, !fills);
       return;
     }
     // Auto: llena si la proporción del póster es parecida a la de la pantalla (recorte
@@ -87,6 +90,17 @@ function escapeHtml(str) {
     const screenRatio = window.innerWidth / window.innerHeight;
     const close = Math.abs(Math.log(imgRatio / screenRatio)) < 0.25;
     img.classList.add(close ? 'fit-cover' : 'fit-contain');
+    setBlur(img, !close);
+  }
+
+  // Cuando la imagen se ve completa y no llena la pantalla, lo que sobra se rellena con la
+  // misma imagen muy desenfocada en vez de negro. Solo mientras la imagen está cargada.
+  function setBlur(img, on) {
+    const bg = img.closest('.slide')?.querySelector('.slide__bg');
+    if (!bg) return;
+    const show = Boolean(on && img.getAttribute('src'));
+    bg.style.backgroundImage = show ? `url(${JSON.stringify(img.dataset.src)})` : '';
+    bg.classList.toggle('is-on', show);
   }
 
   function applyFitAll() {
@@ -146,6 +160,7 @@ function escapeHtml(str) {
     if (!img.getAttribute('src')) return;
     img.removeAttribute('src');
     img.classList.remove('is-loaded');
+    setBlur(img, false);
   }
 
   function loadWindow() {

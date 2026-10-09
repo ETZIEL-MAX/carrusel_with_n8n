@@ -80,6 +80,15 @@ test('cada imagen se ajusta según su orientación y la de la pantalla', async (
     await expect(page.locator(`.slide[data-index="${i}"]`)).toHaveClass(/is-active/);
     await expect(img).toHaveClass(/is-loaded/); // el ajuste se decide al cargar cada imagen
     expect(await img.getAttribute('class')).toContain(expected[i]);
+    // Si la imagen se ve completa, lo que sobra se rellena con ella misma difuminada (no negro)
+    const bg = page.locator(`.slide[data-index="${i}"] .slide__bg`);
+    const bgImage = await bg.evaluate((el) => getComputedStyle(el).backgroundImage);
+    if (expected[i] === 'fit-contain') {
+      expect(bgImage).toContain(await img.evaluate((el) => el.dataset.src));
+      expect(await bg.evaluate((el) => getComputedStyle(el).filter)).toContain('blur');
+    } else {
+      expect(bgImage).toBe('none');
+    }
     await page.waitForTimeout(1300); // fundido terminado
     // La imagen activa ocupa toda la pantalla (también la girada)
     const box = await img.boundingBox();
@@ -91,6 +100,22 @@ test('cada imagen se ajusta según su orientación y la de la pantalla', async (
     await page.screenshot({ path: shot });
     await testInfo.attach(`slide-${i}-${testInfo.project.name}`, { path: shot, contentType: 'image/png' });
   }
+});
+
+test('el fondo difuminado se quita cuando la imagen sale de la ventana de carga', async ({ page }) => {
+  await page.goto('/carrusel/USER1');
+  await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
+  // Estando en la 0 están cargadas la 0, la 1 y la 3. La 3 (cuadrada) siempre se ve completa.
+  expect(await loadedIndexes(page)).toEqual([0, 1, 3]);
+  const bg3 = page.locator('.slide[data-index="3"] .slide__bg');
+  expect(await bg3.evaluate((el) => getComputedStyle(el).backgroundImage)).not.toBe('none');
+  // Al avanzar a la 1, la 3 sale de la ventana: pierde su imagen y también su fondo
+  await page.locator('.dot[data-index="1"]').click();
+  await expect.poll(() => loadedIndexes(page)).toEqual([0, 1, 2]);
+  expect(await bg3.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none');
+  // La 2 entró a la ventana pero está girada: llena la pantalla y no necesita fondo
+  await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
+  expect(await page.locator('.slide[data-index="2"] .slide__bg').evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none');
 });
 
 test('el carrusel arranca desde la última lista guardada', async ({ page }) => {
