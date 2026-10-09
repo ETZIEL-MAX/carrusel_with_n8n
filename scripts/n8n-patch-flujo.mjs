@@ -20,7 +20,6 @@ const TOKEN_LINE = "const token = String($('Variables').first().json.token || ''
 const TIMESTAMP_HEADER = { name: 'X-Webhook-Timestamp', value: '={{ $json.timestamp }}' };
 
 const OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
-const WAN_MAX_LADO = 2048; // lado mayor que se le pide a Wan; "Optimizar imagen" lleva el póster al tamaño del panel
 const ARMAR_PROMPT = [
   '// Cuerpo de la peticion a OpenRouter: reglas fijas (system) + datos del cliente (user).',
   'var item = $input.first().json;',
@@ -132,9 +131,30 @@ function patchPrepararWan(code, formato) {
   let tail = code.slice(code.indexOf('// Arma la peticion a Wan'));
   if (!tail.startsWith('// Arma la peticion a Wan')) throw new Error('Nodo "Preparar Wan": no se encontró el inicio del código');
   if (!tail.includes('tamanoGeneracion(')) {
-    tail = replaceOnce(tail, /var size = an \+ '\*' \+ al;/, () => `var g = tamanoGeneracion(an, al, ${WAN_MAX_LADO});\nvar size = g.ancho + '*' + g.alto;`, 'Preparar Wan', 'tamaño pedido');
+    tail = replaceOnce(tail, /var size = an \+ '\*' \+ al;/, () => "var g = tamanoGeneracion(an, al);\nvar size = g.ancho + '*' + g.alto;", 'Preparar Wan', 'tamaño pedido');
+  } else {
+    // Una versión anterior le pasaba un lado máximo: la política vive ahora en formato.js (encabezado).
+    tail = tail.replace(/tamanoGeneracion\(an, al, \d+\)/, 'tamanoGeneracion(an, al)');
   }
   return formato + '\n' + tail;
+}
+
+// El AI Agent solo se puede cambiar por una llamada HTTP si nada más depende de él: ninguna conexión
+// que no sea "main" (memoria, herramientas, parser) salvo el modelo de chat, y ese modelo sin opciones
+// propias (temperatura, etc.) que se perderían.
+function assertAgentReemplazable(wf) {
+  for (const [src, outputs] of Object.entries(wf.connections)) {
+    for (const [type, lists] of Object.entries(outputs)) {
+      const apuntaAlAgente = lists.some((l) => (l || []).some((c) => c.node === 'AI Agent'));
+      if (apuntaAlAgente && type !== 'main' && !(src === 'OpenRouter Chat Model' && type === 'ai_languageModel')) {
+        throw new Error(`"${src}" se conecta al AI Agent por ${type}: se perdería al cambiarlo por una llamada HTTP`);
+      }
+    }
+  }
+  const modelo = wf.nodes.find((n) => n.name === 'OpenRouter Chat Model');
+  if (modelo && Object.keys(modelo.parameters?.options || {}).length) {
+    throw new Error('"OpenRouter Chat Model" tiene opciones (' + Object.keys(modelo.parameters.options).join(', ') + '): Redactar prompt las perdería');
+  }
 }
 
 function addNode(nodes, node) {
@@ -287,6 +307,7 @@ export function patchWorkflow(workflow, snippets) {
   if (!agent && !armado) throw new Error('Falta el nodo "AI Agent" (ni "Armar prompt" si ya estaba parchado)');
   const at = (agent || armado).position;
   const audio = get('Transcribir audio');
+  if (agent) assertAgentReemplazable(wf);
   addNode(wf.nodes, {
     parameters: { jsCode: formato + '\n' + prompt + '\n\n' + ARMAR_PROMPT },
     id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0005',

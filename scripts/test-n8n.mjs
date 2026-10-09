@@ -98,9 +98,20 @@ check('zonaLogo en vertical Full HD conserva el tamaño', zonaLogo(1080, 1920).l
 check('zonaLogo en HD achica el logo', zonaLogo(1280, 720).logoAncho < 420 && zonaLogo(1280, 720).logoAncho > 200, J(zonaLogo(1280, 720)));
 check('posicionLogo esquina inferior derecha', J(posicionLogo(1920, 1080, 420, 224, 50)) === J({ posX: 1450, posY: 806 }));
 check('posicionLogo nunca negativa si el póster salió chico', J(posicionLogo(300, 200, 420, 224, 50)) === J({ posX: 0, posY: 0 }));
-check('tamanoGeneracion recorta 4K a 2048', J(tamanoGeneracion(3840, 2160, 2048)) === J({ ancho: 2048, alto: 1152 }), J(tamanoGeneracion(3840, 2160, 2048)));
-check('tamanoGeneracion no toca lo que cabe', J(tamanoGeneracion(1080, 1920, 2048)) === J({ ancho: 1080, alto: 1920 }));
-check('tamanoGeneracion vertical 4K: proporción y medidas pares', (() => { const g = tamanoGeneracion(2160, 3840, 2048); return g.alto === 2048 && g.ancho === 1152 && g.ancho % 2 === 0; })());
+// Wan acepta entre 768x768 y 1440x1440 píxeles en total; 1920x1080 es justo 1440x1440 y es lo único probado en producción.
+check('tamanoGeneracion: 4K y 2K se piden como Full HD (1920x1080)', J(tamanoGeneracion(3840, 2160)) === J({ ancho: 1920, alto: 1080 }) && J(tamanoGeneracion(2560, 1440)) === J({ ancho: 1920, alto: 1080 }), J(tamanoGeneracion(3840, 2160)));
+check('tamanoGeneracion: vertical 4K -> 1080x1920', J(tamanoGeneracion(2160, 3840)) === J({ ancho: 1080, alto: 1920 }));
+check('tamanoGeneracion: lo que ya cabe no cambia (Full HD de todos los formatos y HD)', [[1920, 1080], [1080, 1920], [1080, 1080], [1440, 1080], [1080, 1440], [1280, 720]].every(([w, h]) => J(tamanoGeneracion(w, h)) === J({ ancho: w, alto: h })));
+check('tamanoGeneracion: cuadrado 4K -> 1440x1440', J(tamanoGeneracion(2160, 2160)) === J({ ancho: 1440, alto: 1440 }));
+check('tamanoGeneracion: cuadrado HD (720x720, bajo el mínimo) sube a 768x768', J(tamanoGeneracion(720, 720)) === J({ ancho: 768, alto: 768 }), J(tamanoGeneracion(720, 720)));
+check('tamanoGeneracion: 15 formatos x resoluciones -> área entre 768² y 1440², medidas pares, misma proporción', (() => {
+  const fmts = { horizontal: [16, 9], vertical: [9, 16], cuadrado: [1, 1], horizontal43: [4, 3], vertical34: [3, 4] };
+  return Object.values(fmts).every(([rw, rh]) => [720, 1080, 1440, 2160].every((lado) => {
+    const u = lado / Math.min(rw, rh), W = Math.round(rw * u), H = Math.round(rh * u);
+    const g = tamanoGeneracion(W, H);
+    return g.ancho * g.alto <= 2073600 && g.ancho * g.alto >= 589824 && g.ancho % 2 === 0 && g.alto % 2 === 0 && Math.abs(g.ancho / g.alto - W / H) < 0.01;
+  }));
+})());
 const rules = reglasLayout(1920, 1080);
 check('reglas: pide lienzo completo', /FULL BLEED/.test(rules) && /entire right side/.test(rules));
 check('reglas: ya no manda todo a la izquierda', !/on the left or the top/.test(rules) && !/must stay EMPTY/.test(rules));
@@ -267,7 +278,7 @@ if (!existsSync(exportPath)) {
     input: {}, binary: { data: { mimeType: 'image/png' } },
     self: { helpers: { getBinaryDataBuffer: async () => Buffer.from('img') } },
   }))[0].json.body);
-  check('Preparar Wan: 4K se pide a 2048x1152 (el póster se lleva a 4K después)', wanBody.parameters.size === '2048*1152', wanBody.parameters.size);
+  check('Preparar Wan: 4K se pide como Full HD (1920*1080); "Optimizar imagen" lo lleva a 4K después', wanBody.parameters.size === '1920*1080', wanBody.parameters.size);
   const wanFull = JSON.parse((await run('Preparar Wan', {
     nodes: { 'Init contexto': { ancho: 1920, alto: 1080 }, 'Parsear salida': { prompt_final: 'P' } },
     input: {}, binary: { data: { mimeType: 'image/png' } },
@@ -278,6 +289,36 @@ if (!existsSync(exportPath)) {
   j = (await run('Firmar consumo', { token: 'crt_abc', input: chat, executionId: '77', runIndex: 4 }))[0].json;
   check('Firmar consumo: reporta el texto', JSON.parse(j.body).kind === 'text' && JSON.parse(j.body).eventId === '77-txt-4' && j.signature === ref('crt_abc', j.timestamp + '.' + j.body));
   check('Firmar consumo: un texto sin tokens no reporta nada', (await run('Firmar consumo', { token: 'crt_abc', input: { choices: [{ message: { content: 'FALSE' } }] } })).length === 0);
+
+  // ===== Revisión final: constantes de Wan en formato.js, guardas del parche y referencias a nodos eliminados =====
+  const codigoWan = (flujo) => flujo.nodes.find((n) => n.name === 'Preparar Wan').parameters.jsCode;
+  const repatched = patchWorkflow(out, { ...snippets, formato: snippets.formato.replace('2073600', '1000000') });
+  check('cambiar la constante de Wan en formato.js llega a un flujo que ya estaba parchado', /1000000/.test(codigoWan(repatched)) && !/2073600/.test(codigoWan(repatched)));
+  const viejoWan = JSON.parse(JSON.stringify(out));
+  viejoWan.nodes.find((n) => n.name === 'Preparar Wan').parameters.jsCode = codigoWan(viejoWan).replace('tamanoGeneracion(an, al)', 'tamanoGeneracion(an, al, 2048)');
+  check('un Preparar Wan de la versión anterior (con lado máximo) se corrige al volver a parchar', !/tamanoGeneracion\(an, al, \d+\)/.test(codigoWan(patchWorkflow(viejoWan, snippets))) && /tamanoGeneracion\(an, al\)/.test(codigoWan(patchWorkflow(viejoWan, snippets))));
+  check('ninguna referencia a los nodos eliminados en el flujo', !/\$\(\\?['"]\s*(AI Agent|OpenRouter Chat Model)|\$node\[\\?['"]\s*(AI Agent|OpenRouter Chat Model)/.test(J(out.nodes)));
+  check('nada que no sea "main" apunta a Armar prompt', Object.values(out.connections).every((v) => Object.entries(v).every(([t, lists]) => t === 'main' || !lists.some((l) => (l || []).some((c) => c.node === 'Armar prompt')))));
+  if (!yaParchado) {
+    const conMemoria = JSON.parse(JSON.stringify(copia));
+    conMemoria.nodes.push({ name: 'Memoria', type: 'x', typeVersion: 1, position: [0, 0], parameters: {} });
+    conMemoria.connections.Memoria = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
+    let msg2 = '';
+    try { patchWorkflow(conMemoria, snippets); } catch (err) { msg2 = err.message; }
+    check('el parche se niega si algo más va al AI Agent por una conexión que no es main', /ai_memory/.test(msg2), msg2);
+    const conOpciones = JSON.parse(JSON.stringify(copia));
+    conOpciones.nodes.find((n) => n.name === 'OpenRouter Chat Model').parameters.options = { temperature: 0.2 };
+    msg2 = '';
+    try { patchWorkflow(conOpciones, snippets); } catch (err) { msg2 = err.message; }
+    check('el parche se niega si el modelo tenía opciones que se perderían', /opciones/.test(msg2), msg2);
+  }
+
+  // Armar prompt alimentado con la salida real de Init contexto (no con un item armado a mano)
+  const iniReal = (await run('Init contexto', { input: {}, nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: 'TACOS 3X50 hoy' } }] }, 'Traer settings': { data: { defaultOrientation: 'vertical', posterWidth: 1440, posterHeight: 2560, colorPalette: ['#ff0000'] } } } }))[0].json;
+  const deInit = JSON.parse((await run('Armar prompt', { input: iniReal, nodes: { 'Init contexto': iniReal } }))[0].json.body).messages;
+  check('Armar prompt con la salida real de Init contexto: mensaje, paleta y lienzo', /TACOS 3X50 hoy/.test(deInit[1].content) && /#ff0000/.test(deInit[1].content) && /lienzo 1440x2560/.test(deInit[0].content), deInit[1].content.slice(0, 120));
+  const deRonda = JSON.parse((await run('Armar prompt', { input: { ...iniReal, ronda: 2, prompt_base: 'PROMPT VIEJO', producto: 'TACOS' }, nodes: { 'Init contexto': iniReal } }))[0].json.body).messages;
+  check('Armar prompt en una ronda siguiente: ronda, prompt anterior y producto', /RONDA: 2/.test(deRonda[1].content) && /PROMPT VIEJO/.test(deRonda[1].content) && /PRODUCTO ACTUAL: TACOS/.test(deRonda[1].content), deRonda[1].content.slice(0, 160));
 }
 
 console.log(`\n${pass}/${total} pruebas OK`);

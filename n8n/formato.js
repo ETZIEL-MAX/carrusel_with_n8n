@@ -53,12 +53,24 @@ function posicionLogo(posterAncho, posterAlto, logoAncho, logoAlto, margen) {
   };
 }
 
-// Tamaño que se le pide al generador: misma proporcion, lado mayor <= maxLado, medidas pares.
-// El nodo "Optimizar imagen" lleva despues el resultado al tamaño exacto del panel.
-function tamanoGeneracion(ancho, alto, maxLado) {
-  var mayor = Math.max(ancho, alto);
-  var k = mayor > maxLado ? maxLado / mayor : 1;
-  var par = function (n) { return Math.max(2, 2 * Math.round(n * k / 2)); };
+// Wan acepta imagenes de entre 768x768 y 1440x1440 pixeles en total. 1920x1080 es justo
+// 1440x1440 y es lo unico probado en produccion: subir WAN_MAX_PIXELES solo despues de probar
+// el nuevo tamano con un mensaje real.
+var WAN_MIN_PIXELES = 589824;  // 768 x 768
+var WAN_MAX_PIXELES = 2073600; // 1440 x 1440 = 1920 x 1080
+
+// Tamaño que se le pide al generador: el del poster llevado a esa area, misma proporcion y
+// medidas pares (hacia abajo si hay que achicar, hacia arriba si hay que agrandar).
+// El nodo "Optimizar imagen" lleva despues el resultado al tamaño exacto del panel: un 2K o un
+// 4K sale ampliado.
+function tamanoGeneracion(ancho, alto) {
+  var area = ancho * alto;
+  var k = area > WAN_MAX_PIXELES ? Math.sqrt(WAN_MAX_PIXELES / area) : (area < WAN_MIN_PIXELES ? Math.sqrt(WAN_MIN_PIXELES / area) : 1);
+  var par = function (n) {
+    var v = n * k;
+    var m = k < 1 ? Math.floor(v / 2 + 1e-9) : (k > 1 ? Math.ceil(v / 2 - 1e-9) : Math.round(v / 2));
+    return Math.max(2, 2 * m);
+  };
   return { ancho: par(ancho), alto: par(alto) };
 }
 
