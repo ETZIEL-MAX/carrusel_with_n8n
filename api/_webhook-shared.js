@@ -16,7 +16,7 @@ import {
   MIN_DURATION, MAX_DURATION, DEFAULT_SLIDE_DURATION,
   verifyClientSignature, clientSignatureHasher, isHttpUrl, sniffImageType, normalizeUserId, getClientIp,
   saveUserFile, saveImageFromTemp, quotaErrorResponse, recordUsage, getUsageSummary, USAGE_KINDS,
-  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat, normalizeResolution, posterSize,
+  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat, normalizeResolution, posterSize, isVisibleAt, normalizeSchedule,
 } from './_utils.js';
 import { isLocal, isLocalImages, optimizeImage, uploadTempDir } from './_store.js';
 import { writeCapped, withUploadSlot, cleanupTemp } from './_stream.js';
@@ -205,7 +205,12 @@ export async function handleSettingsRead(request, rawUserId) {
 //   { "action": "delete",   "index": 3 }
 //   { "action": "duration", "index": 3, "duration": 20 }
 //   { "action": "duration", "index": "all", "duration": 12 }  -> duración por defecto
+//   { "action": "suspend",  "index": 3 }   { "action": "resume", "index": 3 }
+//   { "action": "schedule", "index": 3, "schedule": { "days": [5], "from": "2026-10-17", "to": "2026-11-23" } }
+//   { "action": "schedule", "index": 3, "schedule": null }    -> siempre
+//   { "action": "blur",     "index": 3, "blur": true }
 // `index` es la posición en el carrusel (1 = primera); también se acepta `id`.
+// Suspender no borra: la imagen sigue en la lista (y conserva su número) pero no se muestra.
 export async function handleManage(request, rawUserId) {
   const auth = await authorizeClient(request, rawUserId, 'manage');
   if (auth instanceof Response) return auth;
@@ -219,8 +224,20 @@ export async function handleManage(request, rawUserId) {
   }
 
   const { action, index, id, duration } = body || {};
-  if (!['list', 'delete', 'duration'].includes(action)) {
-    return errorResponse("action debe ser 'list', 'delete' o 'duration'", 400);
+  const ACTIONS = ['list', 'delete', 'duration', 'suspend', 'resume', 'schedule', 'blur'];
+  if (!ACTIONS.includes(action)) {
+    return errorResponse(`action debe ser una de: ${ACTIONS.join(', ')}`, 400);
+  }
+  // Lo que se puede validar sin mirar el carrusel
+  let schedule;
+  if (action === 'schedule') {
+    if (body.schedule === undefined) return errorResponse('Falta schedule ({ days, from, to } o null)', 400);
+    const result = normalizeSchedule(body.schedule);
+    if (result.error) return errorResponse(result.error, 400);
+    schedule = result.value;
+  }
+  if (action === 'blur' && typeof body.blur !== 'boolean') {
+    return errorResponse('blur debe ser true o false', 400);
   }
 
   if (!(await userExists(userId))) {
@@ -240,6 +257,10 @@ export async function handleManage(request, rawUserId) {
         alt: img.alt || '',
         duration: img.duration ?? null,
         effectiveDuration: img.duration ?? slideDuration,
+        suspended: img.suspended === true,
+        schedule: img.schedule ?? null,
+        blur: img.blur === true,
+        visibleNow: isVisibleAt(img),
       }));
       return successResponse(
         { userId, count: sorted.length, slideDuration, images },
@@ -277,6 +298,26 @@ export async function handleManage(request, rawUserId) {
         { userId, index: pos + 1, id: target.id, url: target.url, duration: updated.duration },
         `La imagen #${pos + 1} ahora dura ${duration} s`
       );
+    }
+
+    const base = { userId, index: pos + 1, id: target.id, url: target.url };
+    if (action === 'suspend' || action === 'resume') {
+      const updated = await updateImage(userId, target.id, { suspended: action === 'suspend' });
+      return successResponse(
+        { ...base, suspended: updated.suspended === true, visibleNow: isVisibleAt(updated) },
+        action === 'suspend' ? `Suspendida la imagen #${pos + 1}: ya no se muestra` : `Reactivada la imagen #${pos + 1}`
+      );
+    }
+    if (action === 'schedule') {
+      const updated = await updateImage(userId, target.id, { schedule });
+      return successResponse(
+        { ...base, schedule: updated.schedule ?? null, suspended: updated.suspended === true, visibleNow: isVisibleAt(updated) },
+        schedule ? `Programada la imagen #${pos + 1}` : `La imagen #${pos + 1} se muestra siempre`
+      );
+    }
+    if (action === 'blur') {
+      const updated = await updateImage(userId, target.id, { blur: body.blur });
+      return successResponse({ ...base, blur: updated.blur === true }, `Difuminado ${body.blur ? 'encendido' : 'apagado'} en la imagen #${pos + 1}`);
     }
 
     await deleteImage(userId, target.id);

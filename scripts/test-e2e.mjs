@@ -550,6 +550,53 @@ async function runTests() {
   // m2 conserva su duracion propia (25); m3 usa la del carrusel (15). Max 10 llamadas/min por el rate limit.
   check('  m2 = 25 s, m3 = default 15 s', mg.json.data?.images?.map((i) => i.effectiveDuration).join() === '25,15', mg.json.data?.images?.map((i) => i.effectiveDuration).join());
 
+  // Suspender, programar y difuminar desde el chat. Quedan m2 (#1) y m3 (#2).
+  // Otra IP por llamada: el límite de /api/manage es de 10 por minuto.
+  {
+    let nChat = 0;
+    const ipChat = () => `10.8.0.${++nChat}`;
+    const mg2 = async (payload) => {
+      const b = J(payload);
+      const res = await fetch(BASE + '/api/manage/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(b), 'x-forwarded-for': ipChat() }, body: b });
+      return { status: res.status, json: await res.json() };
+    };
+    const pub = async () => ((await (await fetch(BASE + '/api/carrusel?userId=USER1', { headers: { 'x-forwarded-for': ipChat() } })).json()).data?.images || []).map((i) => i.url.split('/').pop());
+    const hoyM = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'America/Monterrey' }).format(new Date()));
+
+    mg = await mg2({ action: 'suspend', index: 1 });
+    check('manage suspend #1', mg.status === 200 && mg.json.data?.suspended === true && mg.json.data?.index === 1 && mg.json.data?.url === 'https://x.test/m2.jpg', mg.status + ' ' + (mg.json.error || ''));
+    check('  ya no sale en el carrusel público', J(await pub()) === J(['m3.jpg']), J(await pub()));
+    mg = await mg2({ action: 'list' });
+    check('  list la sigue contando y dice que hoy no se muestra', mg.json.data?.count === 2 && mg.json.data.images[0].suspended === true && mg.json.data.images[0].visibleNow === false && mg.json.data.images[1].visibleNow === true && mg.json.data.images[1].suspended === false, J(mg.json.data?.images?.map((i) => [i.suspended, i.visibleNow])));
+    mg = await mg2({ action: 'resume', index: 1 });
+    check('manage resume #1 la devuelve', mg.status === 200 && mg.json.data?.suspended === false && J(await pub()) === J(['m2.jpg', 'm3.jpg']), mg.status);
+
+    mg = await mg2({ action: 'schedule', index: 2, schedule: { days: [(hoyM + 1) % 7], from: '2026-01-01', to: '2030-12-31' } });
+    check('manage schedule #2 (otro día de la semana)', mg.status === 200 && J(mg.json.data?.schedule) === J({ days: [(hoyM + 1) % 7], from: '2026-01-01', to: '2030-12-31' }) && mg.json.data?.visibleNow === false && J(await pub()) === J(['m2.jpg']), mg.status + ' ' + J(mg.json.data?.schedule));
+    mg = await mg2({ action: 'list' });
+    check('  list trae la programación', J(mg.json.data?.images?.[1]?.schedule?.days) === J([(hoyM + 1) % 7]) && mg.json.data.images[1].visibleNow === false && mg.json.data.images[0].schedule === null);
+    mg = await mg2({ action: 'schedule', index: 2, schedule: { days: [9] } });
+    check('manage schedule inválida -> 400 y no cambia nada', mg.status === 400 && J(await pub()) === J(['m2.jpg']), mg.status);
+    mg = await mg2({ action: 'schedule', index: 2 });
+    check('manage schedule sin «schedule» -> 400', mg.status === 400, mg.status);
+    mg = await mg2({ action: 'schedule', index: 2, schedule: null });
+    check('manage schedule null = siempre', mg.status === 200 && mg.json.data?.schedule === null && mg.json.data?.visibleNow === true && J(await pub()) === J(['m2.jpg', 'm3.jpg']), mg.status);
+
+    mg = await mg2({ action: 'blur', index: 1, blur: true });
+    check('manage blur #1 encendido', mg.status === 200 && mg.json.data?.blur === true, mg.status);
+    mg = await mg2({ action: 'list' });
+    check('  list trae el difuminado', mg.json.data?.images?.[0]?.blur === true && mg.json.data.images[1].blur === false);
+    mg = await mg2({ action: 'blur', index: 1, blur: 'si' });
+    check('manage blur que no es true/false -> 400', mg.status === 400, mg.status);
+    mg = await mg2({ action: 'blur', index: 1, blur: false });
+    check('manage blur #1 apagado', mg.status === 200 && mg.json.data?.blur === false, mg.status);
+
+    mg = await mg2({ action: 'suspend', index: 9 });
+    check('manage suspend índice inexistente -> 404', mg.status === 404, mg.status);
+    mg = await mg2({ action: 'pausar', index: 1 });
+    check('manage acción desconocida -> 400 y dice cuáles hay', mg.status === 400 && /suspend/.test(mg.json.error || '') && /schedule/.test(mg.json.error || ''), mg.status + ' ' + mg.json.error);
+  }
+
   console.log('\n== Upload (re-hospedaje local, por carrusel) ==');
   body = J({ url: `${BASE}/uploads/probe.png`, alt: 'Subida' });
   r = await fetch(BASE + '/api/upload/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
