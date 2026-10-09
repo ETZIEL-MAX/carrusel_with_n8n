@@ -80,14 +80,21 @@ test('cada imagen se ajusta según su orientación y la de la pantalla', async (
     await expect(page.locator(`.slide[data-index="${i}"]`)).toHaveClass(/is-active/);
     await expect(img).toHaveClass(/is-loaded/); // el ajuste se decide al cargar cada imagen
     expect(await img.getAttribute('class')).toContain(expected[i]);
-    // Si la imagen se ve completa, lo que sobra se rellena con ella misma difuminada (no negro)
+    // Si la imagen se ve completa, lo que sobra se rellena con una versión diminuta de ella misma,
+    // ampliada y oscurecida (no negro). Sin filter: blur(), que en la GPU de una TV pesa demasiado.
     const bg = page.locator(`.slide[data-index="${i}"] .slide__bg`);
-    const bgImage = await bg.evaluate((el) => getComputedStyle(el).backgroundImage);
+    const fondo = await bg.evaluate((el) => {
+      const px = el.getContext ? el.getContext('2d').getImageData(Math.floor(el.width / 2), Math.floor(el.height / 2), 1, 1).data : [0, 0, 0, 0];
+      return { tag: el.tagName, on: el.classList.contains('is-on'), filter: getComputedStyle(el).filter, ancho: el.width, alfa: px[3] };
+    });
     if (expected[i] === 'fit-contain') {
-      expect(bgImage).toContain(await img.evaluate((el) => el.dataset.src));
-      expect(await bg.evaluate((el) => getComputedStyle(el).filter)).toContain('blur');
+      expect(fondo.tag).toBe('CANVAS');
+      expect(fondo.on).toBe(true);
+      expect(fondo.alfa).toBe(255); // se dibujó
+      expect(fondo.ancho).toBeLessThanOrEqual(96); // diminuto: se amplía con CSS
+      expect(fondo.filter).toBe('none'); // sin desenfoque de GPU
     } else {
-      expect(bgImage).toBe('none');
+      expect(fondo.on).toBe(false);
     }
     await page.waitForTimeout(1300); // fundido terminado
     // La imagen activa ocupa toda la pantalla (también la girada)
@@ -108,14 +115,16 @@ test('el fondo difuminado se quita cuando la imagen sale de la ventana de carga'
   // Estando en la 0 están cargadas la 0, la 1 y la 3. La 3 (cuadrada) siempre se ve completa.
   expect(await loadedIndexes(page)).toEqual([0, 1, 3]);
   const bg3 = page.locator('.slide[data-index="3"] .slide__bg');
-  expect(await bg3.evaluate((el) => getComputedStyle(el).backgroundImage)).not.toBe('none');
+  const encendido = (loc) => loc.evaluate((el) => el.classList.contains('is-on'));
+  expect(await encendido(bg3)).toBe(true);
   // Al avanzar a la 1, la 3 sale de la ventana: pierde su imagen y también su fondo
   await page.locator('.dot[data-index="1"]').click();
   await expect.poll(() => loadedIndexes(page)).toEqual([0, 1, 2]);
-  expect(await bg3.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none');
+  expect(await encendido(bg3)).toBe(false);
+  expect(await bg3.evaluate((el) => el.getContext('2d').getImageData(0, 0, 1, 1).data[3])).toBe(0); // y se borró lo dibujado
   // La 2 entró a la ventana pero está girada: llena la pantalla y no necesita fondo
   await expect.poll(() => allLoaded(page), { timeout: 20_000 }).toBe(true);
-  expect(await page.locator('.slide[data-index="2"] .slide__bg').evaluate((el) => getComputedStyle(el).backgroundImage)).toBe('none');
+  expect(await encendido(page.locator('.slide[data-index="2"] .slide__bg'))).toBe(false);
 });
 
 test('el carrusel arranca desde la última lista guardada', async ({ page }) => {

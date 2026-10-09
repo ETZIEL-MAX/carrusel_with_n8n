@@ -48,7 +48,7 @@ function escapeHtml(str) {
     slidesEl.innerHTML = images
       .map((img, i) => `
         <div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
-          <div class="slide__bg" aria-hidden="true"></div>
+          <canvas class="slide__bg" aria-hidden="true"></canvas>
           <img data-src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" decoding="async" draggable="false" />
         </div>`)
       .join('');
@@ -93,14 +93,32 @@ function escapeHtml(str) {
     setBlur(img, !close);
   }
 
-  // Cuando la imagen se ve completa y no llena la pantalla, lo que sobra se rellena con la
-  // misma imagen muy desenfocada en vez de negro. Solo mientras la imagen está cargada.
+  // Cuando la imagen se ve completa y no llena la pantalla, lo que sobra se rellena con una
+  // versión diminuta de la misma imagen, ampliada por CSS y oscurecida, en vez de negro. Sin
+  // filter: blur(): en la GPU de una TV un desenfoque a pantalla completa pesa demasiado, y esto
+  // cuesta casi nada. Solo mientras la imagen está cargada.
+  const BG_SIDE = 64; // lado mayor del dibujo diminuto
   function setBlur(img, on) {
     const bg = img.closest('.slide')?.querySelector('.slide__bg');
-    if (!bg) return;
-    const show = Boolean(on && img.getAttribute('src'));
-    bg.style.backgroundImage = show ? `url(${JSON.stringify(img.dataset.src)})` : '';
-    bg.classList.toggle('is-on', show);
+    if (!bg || !bg.getContext) return;
+    const show = Boolean(on && img.getAttribute('src') && img.complete && img.naturalWidth > 0);
+    if (show && !bg.dataset.drawn) {
+      try {
+        const nw = img.naturalWidth, nh = img.naturalHeight;
+        bg.width = nw >= nh ? BG_SIDE : Math.max(8, Math.round((BG_SIDE * nw) / nh));
+        bg.height = nw >= nh ? Math.max(8, Math.round((BG_SIDE * nh) / nw)) : BG_SIDE;
+        const ctx = bg.getContext('2d');
+        ctx.drawImage(img, 0, 0, bg.width, bg.height);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(0, 0, bg.width, bg.height);
+        bg.dataset.drawn = '1';
+      } catch { /* sin canvas: queda el fondo negro de siempre */ }
+    }
+    if (!show && bg.dataset.drawn) {
+      bg.getContext('2d').clearRect(0, 0, bg.width, bg.height);
+      delete bg.dataset.drawn;
+    }
+    bg.classList.toggle('is-on', show && Boolean(bg.dataset.drawn));
   }
 
   function applyFitAll() {

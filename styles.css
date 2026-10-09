@@ -89,15 +89,15 @@ textarea:focus-visible {
 
 /* La imagen llena todo el marco: en una pantalla 16:9 con un póster 16:9 no recorta
    nada; en una ventana de otra proporción recorta un poco en vez de verse "partida".
-   Si se ve completa y sobra espacio, ese espacio es la misma imagen difuminada (.slide__bg). */
+   Si se ve completa y sobra espacio, ese espacio es la misma imagen en miniatura ampliada y
+   oscurecida (.slide__bg, un canvas de 64 px; ver setBlur en carousel.js). */
 .slide__bg {
   position: absolute;
-  inset: -6%; /* sobra un poco para que el desenfoque no deje un borde claro */
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
   z-index: 0;
-  background-position: center;
-  background-size: cover;
-  background-repeat: no-repeat;
-  filter: blur(36px) brightness(0.55);
   opacity: 0;
   transition: opacity 0.5s var(--ease);
   pointer-events: none;
