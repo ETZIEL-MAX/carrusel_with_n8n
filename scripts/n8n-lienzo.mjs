@@ -29,10 +29,10 @@ export const SECCIONES = [
   },
   {
     n: 4, titulo: 'JEV: ¿qué quiere el cliente?', color: 4,
-    texto: '**JEV** (llamada HTTP al modelo de jevmodel.org) lee el mensaje y decide: **spam**, **póster con logo**, **póster sin logo** o **comando**. Sus preguntas se editan en el nodo `JEV` → cuerpo JSON (`questions`); la llave va en la cabecera `Authorization`.\n`Detectar ruta` junta todo y reparte: el spam no se contesta; una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
+    texto: '**JEV** (llamada HTTP al modelo de jevmodel.org) lee el mensaje y decide: **póster con logo**, **póster sin logo** o **comando**. Sus preguntas se editan en el nodo `JEV` → cuerpo JSON (`questions`); la llave va en la cabecera `Authorization`.\n`Detectar ruta` junta todo y reparte: una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
     nodos: {
-      'Hay texto': [12, 0], JEV: [13, 0], 'Detectar ruta': [14, 0], 'Es spam': [15, 0],
-      'Mensaje ignorado': [16, -1], 'Es foto': [16, 0], 'Es comando': [17, 0], 'Es ayuda': [18, 0], 'Enviar ayuda': [19, -1],
+      'Hay texto': [12, 0], JEV: [13, 0], 'Detectar ruta': [14, 0],
+      'Es foto': [15, 0], 'Es comando': [16, 0], 'Es ayuda': [17, 0], 'Enviar ayuda': [18, -1],
     },
   },
   {
@@ -71,7 +71,7 @@ export const SECCIONES = [
   },
   {
     n: 9, titulo: 'Logo', color: 6,
-    texto: '`Con logo` decide según lo que pidió el cliente. **Sí:** ajusta el póster al tamaño del panel y le pone el logo en la esquina inferior derecha. **No:** solo lo ajusta al tamaño y sigue.',
+    texto: 'El modelo nunca dibuja el logo. `Con logo` decide según lo que pidió el cliente. **Sí:** ajusta el póster al tamaño del panel y le sobrepone el logo en la esquina inferior derecha. **No:** solo lo ajusta al tamaño y sigue.',
     nodos: {
       'Con logo': [0, 13], 'Descargar logo': [1, 12], 'Redimensionar logo': [2, 12], 'Info logo': [3, 12],
       'Optimizar imagen': [1, 13], 'Info poster': [2, 13], Merge: [3, 13], 'Calcular posicion': [4, 13], 'Componer logo': [5, 13],

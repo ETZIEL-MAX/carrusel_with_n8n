@@ -75,7 +75,7 @@ function tamanoGeneracion(ancho, alto) {
 }
 
 // Reglas finales fijas que se agregan al prompt (no dependen de la IA): formato del panel,
-// textos que quepan, escena a lienzo completo y esquina del logo. Con `conLogo === false`
+// textos que quepan, escena a lienzo completo y logo sobrepuesto (sin franja ni zona preparada). Con `conLogo === false`
 // (el cliente pidio el poster sin logo) no se reserva ninguna esquina.
 function reglasLayout(ancho, alto, conLogo) {
   var an = Number(ancho) || 1920, al = Number(alto) || 1080;
@@ -84,8 +84,8 @@ function reglasLayout(ancho, alto, conLogo) {
   return ' FINAL LAYOUT RULES (highest priority, they override anything above):'
     + ' 1) FORMAT: this is a ' + ori + ' poster on a canvas of EXACTLY ' + an + 'x' + al + ' pixels. Compose the whole scene for this canvas and fill it edge to edge; ignore the aspect ratio of the product reference photo.'
     + ' 2) TEXT FIT: every text must be completely visible inside the canvas, with a safe margin of at least 6 percent on all four sides. Reduce the font size until each line fits; never crop, clip, overlap or let any letter or number touch or cross an edge. Keep each text on one or two short lines and well separated from the other texts and from the product.'
-    + ' 3) FULL BLEED: the scene and its background must cover the whole canvas edge to edge, including the entire right side. Never leave a blank, white or empty half, band or column.'
+    + ' 3) FULL BLEED: the scene and its background must cover the whole canvas edge to edge, including the entire right side. Never leave a blank, white, empty or plain-colored half, band, stripe or column.'
     + (conLogo === false
       ? ' 4) NO LOGO: do not draw any logo, brand mark, emblem, watermark, frame or box anywhere. No corner has to stay free: use the whole canvas for the scene, the product and the texts.'
-      : ' 4) LOGO CORNER: only the bottom-right corner, a rectangle about ' + z.zonaAnchoPct + ' percent of the width and ' + z.zonaAltoPct + ' percent of the height, must be free of product, text, price, badges and icons. Do not leave it white, pale or cut out: the same scene background continues there, with the same colors, light and texture as the rest of the scene (no extra detail), so a black logo placed later stays readable. Do not draw any logo, frame or box. Texts and price may go anywhere else, including the right side above that corner.');
+      : ' 4) LOGO OVERLAY: never draw a logo, brand mark, emblem, watermark, frame or box. A logo is overlaid later on top of the bottom-right corner, so just keep text, price, badges and faces out of that corner (about ' + z.zonaAnchoPct + ' percent of the width and ' + z.zonaAltoPct + ' percent of the height). Do NOT prepare anything for it: no band, stripe, line, column, panel, box, border or differently colored area on the right side or at the bottom. The scene and its background continue there exactly as in the rest of the image.');
 }

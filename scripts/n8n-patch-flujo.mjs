@@ -6,7 +6,7 @@
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
 //   - los comandos del chat (suspender, programar, difuminar...) salen de n8n/comandos.js y n8n/respuestas.js
-//   - JEV (una llamada HTTP a jevmodel.org) clasifica el mensaje: spam, póster con o sin logo, o comando (n8n/clasificador.js)
+//   - JEV (una llamada HTTP a jevmodel.org) clasifica el mensaje: póster con o sin logo, o comando (n8n/clasificador.js)
 //   - las instrucciones del que redacta el prompt se editan en el nodo "Instrucciones del director"
 //   - los nodos se acomodan en 12 secciones con su nota (scripts/n8n-lienzo.mjs)
 // Lo que el usuario edita en n8n no se pisa: las preguntas (cuerpo JSON) y la llave del nodo "JEV", y los
@@ -91,8 +91,7 @@ const DETECTAR_COMANDOS = [
   '    if (deJev) { cmd = deJev; }',
   "    else if (!cmd) { cmd = interpretarComando('ayuda', hoy); }",
   '  } else if (!cmd) {',
-  "    if (jev.tipo === 'spam') { out.ruta = 'spam'; }",
-  '    else { out.con_logo = jev.logo; }',
+  '    out.con_logo = jev.logo;',
   '  }',
   '}',
   'if (cmd) { out.ruta = cmd.ruta; out.accion = cmd.accion; out.index = cmd.index; out.duracion = cmd.duracion; out.bodyToSign = cmd.bodyToSign; }',
@@ -483,7 +482,7 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   get('Armar respuesta').parameters.jsCode = respuestas + '\n\n' + ARMAR_RESPUESTA;
   get('Enviar ayuda').parameters.textBody = AYUDA;
 
-  // 8. JEV: una llamada HTTP a jevmodel.org clasifica el mensaje antes de "Detectar ruta": spam,
+  // 8. JEV: una llamada HTTP a jevmodel.org clasifica el mensaje antes de "Detectar ruta":
   // póster (con o sin logo) o comando. Las preguntas (el cuerpo JSON) y la llave son del usuario:
   // se crean con los valores de fábrica y después no se vuelven a tocar.
   const previo = (name) => wf.nodes.find((n) => n.name === name);
@@ -519,36 +518,19 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
     maxTries: 2,
     waitBetweenTries: 1000,
     onError: 'continueRegularOutput',
-    notes: 'Clasifica el mensaje con el modelo JEV (jevmodel.org): spam, poster (con o sin logo) o comando. Las preguntas estan en el cuerpo JSON. Si falla, el flujo sigue como si no existiera.',
+    notes: 'Clasifica el mensaje con el modelo JEV (jevmodel.org): poster (con o sin logo) o comando. Las preguntas estan en el cuerpo JSON. Si falla, el flujo sigue como si no existiera.',
   });
   wf.nodes = wf.nodes.filter((n) => n.name !== 'Modelo de JEV');
   delete wf.connections['Modelo de JEV'];
-  addNode(wf.nodes, {
-    parameters: condicion('es-spam-1', '={{ $json.ruta }}', { type: 'string', operation: 'equals' }, 'spam'),
-    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0010',
-    name: 'Es spam',
-    type: 'n8n-nodes-base.if',
-    typeVersion: 2.2,
-    position: [0, 0],
-  });
-  addNode(wf.nodes, {
-    parameters: {},
-    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0011',
-    name: 'Mensaje ignorado',
-    type: 'n8n-nodes-base.noOp',
-    typeVersion: 1,
-    position: [0, 0],
-    notes: 'Spam: no se contesta. Queda aqui para verlo en la ejecucion.',
-  });
-  const noEsSpam = wf.connections['Es spam']?.main?.[1] || wf.connections['Detectar ruta']?.main?.[0];
-  if (!noEsSpam || !noEsSpam.some((c) => c.node === 'Es foto')) throw new Error('"Detectar ruta" ya no conecta con "Es foto"');
   wf.connections['Traer settings'] = { main: link('Hay texto') };
   wf.connections['Hay texto'] = { main: [link('JEV')[0], link('Detectar ruta')[0]] };
   // JEV también gasta tokens: se reportan igual que los del prompt y el audio.
   wf.connections.JEV = { main: link('Detectar ruta', 'Firmar consumo') };
-  wf.connections['Detectar ruta'] = { main: link('Es spam') };
-  wf.connections['Es spam'] = { main: [link('Mensaje ignorado')[0], noEsSpam] };
+  // No hay filtro de spam: lo que no es foto ni comando genera un póster.
+  wf.nodes = wf.nodes.filter((n) => n.name !== 'Es spam' && n.name !== 'Mensaje ignorado');
+  delete wf.connections['Es spam'];
   delete wf.connections['Mensaje ignorado'];
+  wf.connections['Detectar ruta'] = { main: link('Es foto') };
 
   // 9. Póster sin logo: "Con logo" decide. Sí: el camino de siempre. No: solo se ajusta al tamaño.
   const optimizar = get('Optimizar imagen');

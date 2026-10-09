@@ -13,8 +13,7 @@ En el lienzo de n8n los nodos están agrupados en **12 secciones**, cada una con
 que tiene su número y su título. Un mensaje las recorre así:
 
 ```
-1 Entrada → 2 Audio → 3 Ajustes → 4 JEV ─┬─ spam ......... no se contesta
-                                          ├─ foto ......... 5 Foto → Drive
+1 Entrada → 2 Audio → 3 Ajustes → 4 JEV ─┬─ foto ......... 5 Foto → Drive
                                           ├─ comando ...... 6 Comandos
                                           └─ póster ....... 7 Prompt → 8 Imagen → 9 Logo
                                                             → 10 Vista previa → 11 Publicar
@@ -38,7 +37,7 @@ Solo corre si mandaron una nota de voz. El texto transcrito se trata igual que u
 Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la resolución del póster.
 
 ### 4 · JEV: ¿qué quiere el cliente?
-`Hay texto` → `JEV` → `Detectar ruta` → `Es spam` → `Es foto` → `Es comando` → `Es ayuda`
+`Hay texto` → `JEV` → `Detectar ruta` → `Es foto` → `Es comando` → `Es ayuda`
 
 - **`Hay texto`**: si el mensaje trae texto (escrito o audio), lo lee JEV. Una foto sola pasa directo.
 - **`JEV`** es un nodo **HTTP Request** que llama al modelo JEV:
@@ -48,7 +47,7 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
 
   | Pregunta | Tipo | Qué contesta |
   |---|---|---|
-  | `tipo` | opción | `poster`, `comando` o `spam` |
+  | `tipo` | opción | `poster` o `comando` |
   | `sin_logo` | sí/no | qué tan probable es que pidan el póster sin logo (0 a 1) |
   | `accion` | opción | qué orden es: `lista`, `ayuda`, `borrar`, `suspender`, `activar`, `difuminar`, `quitar_difuminado` u `otra` |
   | `imagen` | opción | de cuál imagen habla: `imagen_1` … `imagen_12` o `ninguna` |
@@ -57,8 +56,7 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
 
   | Lo que contesta JEV | Qué pasa |
   |---|---|
-  | `tipo: spam` (saludos, charla, cadenas, publicidad ajena) | **No se contesta nada.** Termina en `Mensaje ignorado`. |
-  | `tipo: poster` | Se genera el póster y se le pone el logo. |
+  | `tipo: poster` (un producto, una promoción **o un aviso**) | Se genera el póster y se le sobrepone el logo. |
   | `tipo: poster` y `sin_logo` alto | Se genera el póster **sin** logo. |
   | `tipo: comando` | Con `accion` + `imagen` se arma la orden (`SUSPENDER 2`) y se ejecuta. |
 
@@ -70,8 +68,11 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
     `DURACION 3 20`). JEV elige entre opciones, no puede sacar días, fechas ni segundos de una
     frase; si alguien lo pide en frase libre, el bot contesta con la ayuda.
   - `BORRAR` sigue enseñando la imagen y pidiendo confirmación.
-  - **JEV tiene que estar seguro** (0.6 o más, de 0 a 1). Un «spam» o «comando» dudoso se trata
-    como póster, y un «sin logo» dudoso lleva logo: es mejor un póster de más que ignorar a un cliente.
+  - **No hay filtro de spam.** Todo lo que no es una foto ni un comando sigue al póster. Si el
+    mensaje es solo un saludo («hola», «gracias»), el director no encuentra nada que anunciar y el
+    bot contesta «No entendí el mensaje».
+  - **JEV tiene que estar seguro** (0.6 o más, de 0 a 1). Un «comando» dudoso se trata como
+    póster, y un «sin logo» dudoso lleva logo.
   - **Si JEV falla** (sin red, llave mala, sin saldo), el flujo sigue como si JEV no existiera:
     comandos exactos y, lo demás, póster con logo. Nunca deja al cliente colgado.
 
@@ -90,7 +91,9 @@ LISTA, AYUDA, BORRAR, SUSPENDER, ACTIVAR, PROGRAMAR, DURACION y DIFUMINAR (lista
 `Init contexto` → **`Instrucciones del director`** → `Armar prompt` → `Redactar prompt` → `Parsear salida` → `Es valido`
 
 El «director creativo» es un modelo de texto que convierte el mensaje del cliente en el prompt
-(en inglés) para el generador de imágenes. **Sus instrucciones están en el nodo
+(en inglés) para el generador de imágenes. El mensaje puede ser un producto con su precio o un
+**aviso** («Cerrado el lunes por día festivo», «Nuevo horario de 9 a 6»): en un aviso el texto
+es el protagonista del póster. **Sus instrucciones están en el nodo
 `Instrucciones del director`** (ver el punto 2 de esta guía).
 
 > ¿Por qué no es un nodo «AI Agent»? Porque ese tipo de nodo no dice cuántos tokens gastó.
@@ -102,8 +105,10 @@ El «director creativo» es un modelo de texto que convierte el mensaje del clie
 ### 9 · Logo
 `Con logo` → sí: `Descargar logo` … `Componer logo` · no: `Optimizar imagen sin logo`
 
-Con logo, el póster se ajusta al tamaño del panel y se le pone el logo en la esquina inferior
-derecha. Sin logo, solo se ajusta al tamaño.
+**El modelo nunca dibuja el logo.** Con logo, el póster se ajusta al tamaño del panel y el flujo
+le **sobrepone** el logo en la esquina inferior derecha; al modelo solo se le pide no poner textos
+ni precio en esa esquina, y se le prohíbe preparar una franja, línea o zona de otro color. Sin
+logo, solo se ajusta al tamaño.
 
 ### 10 · Vista previa
 `Subir imagen compuesta` → … → `Enviar foto` → `Esperar respuesta`
@@ -133,17 +138,17 @@ Hay dos IAs con instrucciones que puedes editar tú, directo en n8n, sin tocar c
    - `criteria`: las opciones y la descripción de cada una.
 3. Edita los **textos** y guarda. Luego **publica** el flujo.
 
-Ejemplo — para que los mensajes que solo traen un enlace cuenten como spam, cambia la descripción
-de la opción `spam` de la pregunta `tipo`:
+Ejemplo — para que «quita la promo vieja» se entienda como una orden, agrega esa frase a los
+ejemplos de la opción `comando` de la pregunta `tipo`:
 
 ```json
-"spam": "Todo lo demas: saludos y charla, cadenas, publicidad ajena, cualquier mensaje que sea solo un enlace, ..."
+"comando": "Quiere administrar las imagenes que YA estan en el carrusel: ... Ejemplos: \"ya no muestres la segunda\", \"quita la promo vieja\"."
 ```
 
 Reglas para no romperlo:
 
 - **Cambia las descripciones, no los nombres.** `tipo`, `sin_logo`, `accion`, `imagen` y los
-  nombres de las opciones (`spam`, `poster`, `comando`, `borrar`, `imagen_3`…) los lee el código
+  nombres de las opciones (`poster`, `comando`, `borrar`, `imagen_3`…) los lee el código
   de `Detectar ruta`.
 - No toques la línea de `"state"`: es la que mete el mensaje del cliente.
 - El cuerpo tiene que seguir siendo JSON válido (comillas dobles, comas entre elementos) y
@@ -228,8 +233,9 @@ Después de publicar, manda estos mensajes desde un número dado de alta:
 
 | # | Mensaje | Qué debe pasar |
 |---|---|---|
-| 1 | `hola buenas tardes` | **Nada.** El bot no contesta (spam). |
-| 2 | `Tacos al pastor 3x50 solo hoy` | Llega un póster **con** logo y pregunta si lo publica. |
+| 1 | `hola buenas tardes` | Contesta «No entendí el mensaje» (no hay nada que anunciar). |
+| 1b | `Cerrado el lunes por día festivo` | Llega un póster de **aviso**, con ese texto como protagonista. |
+| 2 | `Tacos al pastor 3x50 solo hoy` | Llega un póster **con** logo, **sin franja ni línea de color** a la derecha, y pregunta si lo publica. |
 | 3 | `Hamburguesa doble $89 sin logo` | Llega un póster **sin** logo; «sin logo» no aparece escrito en la imagen. |
 | 4 | `LISTA` | Contesta la lista de imágenes del carrusel. |
 | 5 | `ya no muestres la 2` | Contesta que la imagen #2 quedó suspendida. Luego `ACTIVAR 2`. |
@@ -238,8 +244,7 @@ Después de publicar, manda estos mensajes desde un número dado de alta:
 | 7 | Una nota de voz: «pizza familiar a ciento noventa y nueve» | Llega un póster, igual que con texto. |
 | 8 | Una foto con pie `tacos` | Contesta que la guardó en Drive como `tacos.jpg`. |
 
-Si el 1 contesta algo o el 2 no contesta nada, revisa las preguntas de JEV (punto 2).
-Si **todo** sale como póster con logo (también el saludo), JEV está fallando: casi siempre es la llave (punto 3).
+Si el 3 sale con logo o el 5 genera un póster, JEV está fallando: casi siempre es la llave (punto 3).
 
 ---
 
@@ -250,7 +255,8 @@ salen en verde; el que falló, en rojo.
 
 | Síntoma | Dónde mirar |
 |---|---|
-| No contestó nada | ¿Terminó en `Mensaje ignorado`? Entonces JEV lo tomó por spam: abre `JEV` y mira su salida (`answers.tipo`). Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. |
+| No contestó nada | Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. Si la hay, mira en qué nodo se detuvo. |
+| Sale una franja o línea de color donde va el logo | Revisa el texto `con_logo` de `Instrucciones del director`: debe prohibir franjas y zonas de otro color. Si lo dejaste vacío se usa el de fábrica. |
 | JEV sale con error | El flujo sigue igual (póster con logo). `401` = la llave está mal o falta (punto 3); `402` = sin saldo en jevmodel.org; `422` = el cuerpo JSON quedó mal después de editarlo; `429` = demasiadas llamadas por minuto. |
 | Hizo póster de algo que era un comando | Mira `Detectar ruta` → campo `jev` (lo que entendió JEV) y `ruta`. Ajusta las instrucciones de JEV. |
 | Salió con logo aunque pedí sin logo | `Detectar ruta` → `con_logo` debe ser `false`. Si es `true`, mira en `JEV` el valor de `answers.sin_logo.noul`: tiene que ser 0.6 o más. |
