@@ -6,11 +6,17 @@
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
 //   - los comandos del chat (suspender, programar, difuminar...) salen de n8n/comandos.js y n8n/respuestas.js
+//   - JEV (un AI Agent) clasifica el mensaje: spam, póster con o sin logo, o comando (n8n/clasificador.js)
+//   - las instrucciones del que redacta el prompt se editan en el nodo "Instrucciones del director"
+//   - los nodos se acomodan en 12 secciones con su nota (scripts/n8n-lienzo.mjs)
+// Lo que el usuario edita en n8n no se pisa: el System Message de JEV, el nodo "Modelo de JEV" y los
+// tres textos de "Instrucciones del director".
 // Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>
 // La salida se importa en el flujo desde el editor de n8n. Aplicarlo dos veces no cambia nada.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { ordenarLienzo } from './n8n-lienzo.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -67,13 +73,54 @@ const PARSEAR_REGLAS = [
 
 const ZONA = 'America/Monterrey'; // zona del negocio: decide el año de una fecha sin año
 const DETECTAR_COMANDOS = [
-  '// ---- Comandos de texto fijo (sin IA): ver n8n/comandos.js ----',
+  '// ---- Comandos y clasificacion de JEV: ver n8n/comandos.js y n8n/clasificador.js ----',
   'var hoy = null;',
   `try { var ahora = $now.setZone('${ZONA}'); hoy = { anio: ahora.year, mes: ahora.month, dia: ahora.day }; } catch (e) {}`,
+  '// 1) Un comando escrito tal cual (LISTA, BORRAR 3...) se entiende sin IA.',
   'var cmd = interpretarComando(texto, hoy);',
+  '// 2) Lo que dijo JEV. Si no corrio, fallo o contesto algo raro, `jev` queda en null y todo',
+  '//    sigue como si JEV no existiera: poster con logo.',
+  'var jev = null;',
+  "try { jev = leerClasificacion($('JEV').first().json.output); } catch (e) {}",
+  'out.con_logo = true;',
+  "out.jev = jev ? jev.tipo : '';",
+  "if (jev && !(cmd && cmd.ruta === 'comando')) {",
+  "  if (jev.tipo === 'comando') {",
+  '    // JEV escribe la orden en su forma normal y la lee el mismo interprete de siempre.',
+  '    var deJev = interpretarComando(jev.comando, hoy);',
+  '    if (deJev) { cmd = deJev; }',
+  "    else if (!cmd) { cmd = interpretarComando('ayuda', hoy); }",
+  '  } else if (!cmd) {',
+  "    if (jev.tipo === 'spam') { out.ruta = 'spam'; }",
+  '    else { out.con_logo = jev.logo; }',
+  '  }',
+  '}',
   'if (cmd) { out.ruta = cmd.ruta; out.accion = cmd.accion; out.index = cmd.index; out.duracion = cmd.duracion; out.bodyToSign = cmd.bodyToSign; }',
   'return [{ json: out }];',
 ].join('\n');
+
+// Texto del mensaje (escrito o audio transcrito): lo que lee JEV. Una foto no trae texto aqui.
+const TEXTO_MENSAJE = "={{ String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || ($('Transcribir audio').isExecuted ? $('Transcribir audio').first().json.choices?.[0]?.message?.content : '') || '').trim() }}";
+const INIT_LOGO = [
+  '// Con logo o sin logo: lo decide JEV (sale de "Detectar ruta"). Si no dijo nada, con logo.',
+  'var llevaLogo = true;',
+  "try { llevaLogo = $('Detectar ruta').first().json.con_logo !== false; } catch (e) {}",
+  '',
+].join('\n');
+const VISTA_IMAGEN = [
+  '// La imagen sale del nodo que corrio: "Componer logo", o "Optimizar imagen sin logo" si el poster va sin logo.',
+  "var nodoImagen = 'Componer logo';",
+  "try { if ($('Init contexto').first().json.lleva_logo === false) { nodoImagen = 'Optimizar imagen sin logo'; } } catch (e5) {}",
+  'try { bin = $(nodoImagen).last().binary; } catch (e3) {}',
+].join('\n');
+const condicion = (id, leftValue, operator, rightValue = '') => ({
+  conditions: {
+    options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+    conditions: [{ id, leftValue, operator, rightValue }],
+    combinator: 'and',
+  },
+  options: {},
+});
 const ARMAR_RESPUESTA = [
   'var cmd = {};',
   "try { cmd = $('Detectar ruta').first().json || {}; } catch (e) {}",
@@ -153,7 +200,16 @@ function patchInit(code, formato) {
     tail = replaceOnce(tail, /formato_texto: F\.texto \+ ', EXACTAMENTE ' \+ F\.ancho \+ 'x' \+ F\.alto \+ ' pixeles' \}/,
       () => "formato_texto: F.texto + ', EXACTAMENTE ' + F.ancho + 'x' + F.alto + ' pixeles', logo_ancho: Z.logoAncho, logo_alto: Z.logoAlto, logo_margen: Z.margen }", 'Init contexto', 'salida con el formato');
   }
+  if (!tail.includes('lleva_logo')) {
+    tail = replaceOnce(tail, /return \[\{ json: \{ chat: fid,/, () => INIT_LOGO + 'return [{ json: { chat: fid,', 'Init contexto', 'línea de salida');
+    tail = replaceOnce(tail, /logo_margen: Z\.margen \}/, () => 'logo_margen: Z.margen, lleva_logo: llevaLogo }', 'Init contexto', 'salida con el logo');
+  }
   return formato + '\n' + tail;
+}
+
+function patchArmarVista(code) {
+  if (code.includes('Optimizar imagen sin logo')) return code;
+  return replaceOnce(code, /try \{ bin = \$\('Componer logo'\)\.last\(\)\.binary; \} catch \(e3\) \{\}/, () => VISTA_IMAGEN, 'Armar vista', 'lectura de la imagen compuesta');
 }
 
 function patchParsear(code, formato) {
@@ -163,17 +219,23 @@ function patchParsear(code, formato) {
     tail = replaceOnce(tail, /var texto = String\(raw\.output \|\| raw\.text \|\| ''\);/, () => PARSEAR_TEXTO, 'Parsear salida', 'lectura del texto');
     tail = replaceOnce(tail, /\/\/ Reglas finales fijas[\s\S]*?(?=return \[\{ json: \{ valido: valido)/, () => PARSEAR_REGLAS, 'Parsear salida', 'reglas finales');
   }
+  if (!tail.includes("ctx('lleva_logo'")) {
+    tail = replaceOnce(tail, /Number\(ctx\('alto', 1080\)\) \|\| 1080\);/, () => "Number(ctx('alto', 1080)) || 1080, ctx('lleva_logo', true) !== false);", 'Parsear salida', 'llamada a reglasLayout');
+  }
   return formato + '\n' + tail;
 }
 
-function patchDetectar(code, comandos) {
+function patchDetectar(code, clasificador, comandos) {
   let tail = code.slice(code.indexOf('var m = {};'));
   if (!tail.startsWith('var m = {};')) throw new Error('Nodo "Detectar ruta": no se encontró el inicio del código');
-  if (!tail.includes('interpretarComando(')) {
-    // El intérprete escrito a mano (hasta el final del nodo) se cambia por la llamada a n8n/comandos.js.
-    tail = replaceOnce(tail, /\/\/ ---- Comandos de texto fijo \(sin IA\) ----[\s\S]*$/, () => DETECTAR_COMANDOS, 'Detectar ruta', 'bloque de comandos');
-  }
-  return comandos + '\n' + tail;
+  // Todo lo que va después de la foto (comandos y JEV) es de este script: se reescribe siempre.
+  tail = replaceOnce(tail, /\/\/ ---- Comandos (?:de texto fijo|y clasificacion de JEV)[^\n]*----[\s\S]*$/, () => DETECTAR_COMANDOS, 'Detectar ruta', 'bloque de comandos');
+  return clasificador + '\n' + comandos + '\n' + tail;
+}
+
+// Carga las constantes de un fragmento de n8n/ (no tienen export: van pegados en un nodo Code).
+function constantes(src, names) {
+  return new Function(src + '\n; return {' + names.join(',') + '};')();
 }
 
 function patchPrepararWan(code, formato) {
@@ -214,7 +276,7 @@ function addNode(nodes, node) {
 
 const link = (...names) => [names.map((node) => ({ node, type: 'main', index: 0 }))];
 
-export function patchWorkflow(workflow, snippets) {
+export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   const wf = JSON.parse(JSON.stringify(workflow));
   const get = (name) => {
     const n = wf.nodes.find((x) => x.name === name);
@@ -402,10 +464,129 @@ export function patchWorkflow(workflow, snippets) {
   // 7. Comandos del chat: suspender, programar y difuminar (n8n/comandos.js y n8n/respuestas.js).
   const comandos = snippets.comandos.replace(/\s+$/, '');
   const respuestas = snippets.respuestas.replace(/\s+$/, '');
+  const clasificador = snippets.clasificador.replace(/\s+$/, '');
   const detectar = get('Detectar ruta');
-  detectar.parameters.jsCode = patchDetectar(detectar.parameters.jsCode, comandos);
+  detectar.parameters.jsCode = patchDetectar(detectar.parameters.jsCode, clasificador, comandos);
   get('Armar respuesta').parameters.jsCode = respuestas + '\n\n' + ARMAR_RESPUESTA;
   get('Enviar ayuda').parameters.textBody = AYUDA;
+
+  // 8. JEV: un agente de IA lee el mensaje antes de "Detectar ruta" y dice si es spam, un póster
+  // (con o sin logo) o un comando. Sus instrucciones (System Message) y su modelo son del usuario:
+  // se crean con los valores de fábrica y después no se vuelven a tocar.
+  const previo = (name) => wf.nodes.find((n) => n.name === name);
+  const { INSTRUCCIONES_JEV } = constantes(snippets.clasificador, ['INSTRUCCIONES_JEV']);
+  const instruccionesJev = previo('JEV')?.parameters?.options?.systemMessage;
+  addNode(wf.nodes, {
+    parameters: condicion('hay-texto-1', TEXTO_MENSAJE, { type: 'string', operation: 'notEmpty', singleValue: true }),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0007',
+    name: 'Hay texto',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [0, 0],
+    notes: 'Si el mensaje trae texto (escrito o audio transcrito) lo lee JEV. Una foto sola pasa directo.',
+  });
+  addNode(wf.nodes, {
+    parameters: {
+      promptType: 'define',
+      text: TEXTO_MENSAJE,
+      options: { systemMessage: typeof instruccionesJev === 'string' && instruccionesJev.trim() ? instruccionesJev : INSTRUCCIONES_JEV },
+    },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0008',
+    name: 'JEV',
+    type: '@n8n/n8n-nodes-langchain.agent',
+    typeVersion: 3.1,
+    position: [0, 0],
+    onError: 'continueRegularOutput',
+    notes: 'Clasifica el mensaje: spam, poster (con o sin logo) o comando. Sus instrucciones estan en System Message. Si falla, el flujo sigue como si no existiera.',
+  });
+  addNode(wf.nodes, {
+    parameters: previo('Modelo de JEV')?.parameters || { model: OPENROUTER_MODEL, options: { temperature: 0, timeout: 20000, maxRetries: 1 } },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0009',
+    name: 'Modelo de JEV',
+    type: '@n8n/n8n-nodes-langchain.lmChatOpenRouter',
+    typeVersion: 1,
+    position: [0, 0],
+    credentials: previo('Modelo de JEV')?.credentials || JSON.parse(JSON.stringify(audio.credentials)),
+    notes: 'El modelo de OpenRouter que usa JEV. Para cambiarlo, edita el campo Model.',
+  });
+  addNode(wf.nodes, {
+    parameters: condicion('es-spam-1', '={{ $json.ruta }}', { type: 'string', operation: 'equals' }, 'spam'),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0010',
+    name: 'Es spam',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [0, 0],
+  });
+  addNode(wf.nodes, {
+    parameters: {},
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0011',
+    name: 'Mensaje ignorado',
+    type: 'n8n-nodes-base.noOp',
+    typeVersion: 1,
+    position: [0, 0],
+    notes: 'Spam: no se contesta. Queda aqui para verlo en la ejecucion.',
+  });
+  const noEsSpam = wf.connections['Es spam']?.main?.[1] || wf.connections['Detectar ruta']?.main?.[0];
+  if (!noEsSpam || !noEsSpam.some((c) => c.node === 'Es foto')) throw new Error('"Detectar ruta" ya no conecta con "Es foto"');
+  wf.connections['Traer settings'] = { main: link('Hay texto') };
+  wf.connections['Hay texto'] = { main: [link('JEV')[0], link('Detectar ruta')[0]] };
+  wf.connections.JEV = { main: link('Detectar ruta') };
+  wf.connections['Modelo de JEV'] = { ai_languageModel: [[{ node: 'JEV', type: 'ai_languageModel', index: 0 }]] };
+  wf.connections['Detectar ruta'] = { main: link('Es spam') };
+  wf.connections['Es spam'] = { main: [link('Mensaje ignorado')[0], noEsSpam] };
+  delete wf.connections['Mensaje ignorado'];
+
+  // 9. Póster sin logo: "Con logo" decide. Sí: el camino de siempre. No: solo se ajusta al tamaño.
+  const optimizar = get('Optimizar imagen');
+  addNode(wf.nodes, {
+    parameters: condicion('con-logo-1', "={{ $('Init contexto').first().json.lleva_logo !== false }}", { type: 'boolean', operation: 'true', singleValue: true }),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0012',
+    name: 'Con logo',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [fijar.position[0], fijar.position[1]],
+    notes: 'El cliente pidio el poster sin logo? (lo decide JEV). Sin dato, lleva logo.',
+  });
+  addNode(wf.nodes, {
+    parameters: JSON.parse(JSON.stringify(optimizar.parameters)),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0013',
+    name: 'Optimizar imagen sin logo',
+    type: optimizar.type,
+    typeVersion: optimizar.typeVersion,
+    position: [optimizar.position[0], optimizar.position[1] + 224],
+    notes: 'Poster sin logo: solo se lleva al tamano del panel.',
+  });
+  const conLogo = wf.connections['Con logo']?.main?.[0] || wf.connections['Fijar foto']?.main?.[0];
+  if (!conLogo || !['Optimizar imagen', 'Descargar logo'].every((n) => conLogo.some((c) => c.node === n))) throw new Error('"Fijar foto" ya no conecta con "Optimizar imagen" y "Descargar logo"');
+  wf.connections['Fijar foto'] = { main: link('Con logo') };
+  wf.connections['Con logo'] = { main: [conLogo, link('Optimizar imagen sin logo')[0]] };
+  wf.connections['Optimizar imagen sin logo'] = { main: link('Subir imagen compuesta') };
+  const vista = get('Armar vista');
+  vista.parameters.jsCode = patchArmarVista(vista.parameters.jsCode);
+
+  // 10. Instrucciones del director: tres textos que el usuario edita en n8n. Igual que con JEV,
+  // se crean con los de fábrica (n8n/prompt.js) y lo que ya esté escrito no se pisa.
+  const fabrica = constantes(snippets.formato + '\n' + snippets.prompt, ['REGLAS_DIRECTOR', 'LOGO_CON', 'LOGO_SIN']);
+  const escritos = Object.fromEntries((previo('Instrucciones del director')?.parameters?.assignments?.assignments || []).map((a) => [a.name, a.value]));
+  const campo = (name, deFabrica) => ({ id: 'director-' + name, name, value: typeof escritos[name] === 'string' ? escritos[name] : deFabrica, type: 'string' });
+  addNode(wf.nodes, {
+    parameters: {
+      assignments: { assignments: [campo('reglas', fabrica.REGLAS_DIRECTOR), campo('con_logo', fabrica.LOGO_CON), campo('sin_logo', fabrica.LOGO_SIN)] },
+      includeOtherFields: true,
+      options: {},
+    },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0014',
+    name: 'Instrucciones del director',
+    type: 'n8n-nodes-base.set',
+    typeVersion: 3.4,
+    position: [at[0], at[1] + 224],
+    notes: 'AQUI se editan las instrucciones del que redacta el prompt. Marcadores: [FORMATO] [ANCHO] [ALTO] [ZONA_ANCHO] [ZONA_ALTO] [LOGO]. Un campo vacio usa el texto de fabrica.',
+  });
+  renameTarget(wf.connections, 'Armar prompt', 'Instrucciones del director');
+  wf.connections['Instrucciones del director'] = { main: link('Armar prompt') };
+
+  // 11. Lienzo: cada nodo en su sección, con su nota (scripts/n8n-lienzo.mjs).
+  if (lienzo) ordenarLienzo(wf);
 
   if ('nodeCount' in wf) wf.nodeCount = wf.nodes.length;
   return wf;
@@ -417,7 +598,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error('Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>');
     process.exit(1);
   }
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const wf = patchWorkflow(JSON.parse(readFileSync(input, 'utf8')), snippets);
   // Solo lo que el editor de n8n necesita para importar.
   const { name, nodes, connections, settings } = wf;

@@ -175,5 +175,9 @@ scripts/server.mjs  standalone local/Docker server
 scripts/test-e2e.mjs  end-to-end test (npm test)
 n8n/firma.js, consumo.js, formato.js, prompt.js, comandos.js, respuestas.js  source of the n8n Code-node snippets (signing, usage report, poster size and logo zone, prompt messages, chat command parser and replies); no import/export
 scripts/n8n-patch-flujo.mjs  patches an exported n8n workflow JSON with those snippets
+n8n/clasificador.js  JEV: default instructions + parser of the classifier's answer (spam / poster with or without logo / command)
+n8n/prompt.js  default texts of the "Instrucciones del director" node + armarMensajes
+scripts/n8n-lienzo.mjs  canvas layout: 12 sections with sticky notes; refuses to reorder sibling branches
+docs/N8N-FLUJO.md  step-by-step guide to the WhatsApp workflow (Spanish)
 scripts/test-n8n.mjs  tests for the above (npm run test:n8n); n8n/.work/ holds exports (git-ignored, may contain secrets)
 ```

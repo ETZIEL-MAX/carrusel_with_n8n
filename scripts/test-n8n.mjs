@@ -119,6 +119,11 @@ check('reglas: zona del logo con sus porcentajes', /27 percent of the width and 
 check('reglas: conservan formato y ajuste de textos', /EXACTLY 1920x1080 pixels/.test(rules) && /TEXT FIT/.test(rules) && /HORIZONTAL \(landscape\)/.test(rules));
 check('reglas: vertical y cuadrado', /VERTICAL \(portrait\)/.test(reglasLayout(1080, 1920)) && /SQUARE/.test(reglasLayout(1080, 1080)));
 
+check('reglas sin logo: no reserva ninguna esquina y prohíbe dibujar un logo', (() => {
+  const r = reglasLayout(1920, 1080, false);
+  return !/LOGO CORNER/.test(r) && !/bottom-right/.test(r) && /NO LOGO/.test(r) && /FULL BLEED/.test(r) && /TEXT FIT/.test(r) && /EXACTLY 1920x1080 pixels/.test(r);
+})());
+check('reglas: sin decir nada (o con true) llevan la esquina del logo, como siempre', reglasLayout(1920, 1080, true) === rules && reglasLayout(1920, 1080, undefined) === rules);
 console.log('\n== n8n/prompt.js ==');
 const { armarMensajes } = loadAll(['n8n/formato.js', 'n8n/prompt.js'], ['armarMensajes']);
 const msgs = armarMensajes({ texto: 'TACOS 3X50', producto: '', ronda: 2, prompt_base: 'OLD PROMPT', colorPalette: ['#ff0000'] }, { ancho: 1080, alto: 1920, formato_texto: 'vertical 9:16, EXACTAMENTE 1080x1920 pixeles' });
@@ -134,6 +139,39 @@ check('system: porcentajes de la zona del logo según el formato', /aproximadame
 check('user: lleva mensaje, ronda, prompt anterior y paleta', ['TACOS 3X50', 'RONDA: 2', 'OLD PROMPT', '#ff0000'].every((t) => msgs[1].content.includes(t)));
 check('user: sin paleta pide una acorde al producto', /PALETA: elige una paleta/.test(armarMensajes({ texto: 'x' }, { ancho: 1920, alto: 1080, formato_texto: 'h' })[1].content));
 check('entrada vacía no rompe', armarMensajes(undefined, undefined).length === 2);
+
+// Instrucciones editables (nodo "Instrucciones del director") y póster sin logo
+const P = loadAll(['n8n/formato.js', 'n8n/prompt.js'], ['armarMensajes', 'REGLAS_DIRECTOR', 'LOGO_CON', 'LOGO_SIN']);
+const CTX = { ancho: 1080, alto: 1920, formato_texto: 'vertical 9:16, EXACTAMENTE 1080x1920 pixeles' };
+const sys = (item, ctx) => P.armarMensajes(item, ctx)[0].content;
+check('los textos por defecto existen y usan marcadores', /\[FORMATO\]/.test(P.REGLAS_DIRECTOR) && /\[ANCHO\]x\[ALTO\]/.test(P.REGLAS_DIRECTOR) && /\[LOGO\]/.test(P.REGLAS_DIRECTOR) && /\[ZONA_ANCHO\]/.test(P.LOGO_CON) && /\[ZONA_ALTO\]/.test(P.LOGO_CON) && P.LOGO_SIN.length > 40);
+check('ningún marcador queda sin rellenar', !/\[(FORMATO|ANCHO|ALTO|ZONA_ANCHO|ZONA_ALTO|LOGO)\]/.test(sys({ texto: 'x' }, CTX)) && !/\[(FORMATO|ANCHO|ALTO|ZONA_ANCHO|ZONA_ALTO|LOGO)\]/.test(sys({ texto: 'x' }, { ...CTX, lleva_logo: false })));
+check('sin logo: no reserva la esquina y avisa que «sin logo» no es texto del anuncio', (() => {
+  const s = sys({ texto: 'TACOS 3X50 sin logo' }, { ...CTX, lleva_logo: false });
+  return !/esquina INFERIOR DERECHA/.test(s) && /SIN LOGO/.test(s) && /no es un texto del anuncio/i.test(s) && /NO generes, dibujes ni insinues ningun logo/.test(s) && /PROHIBIDO dejar una mitad/.test(s);
+})());
+check('con logo (o sin decir nada): igual que siempre', /esquina INFERIOR DERECHA/.test(sys({ texto: 'x' }, { ...CTX, lleva_logo: true })) && sys({ texto: 'x' }, CTX) === sys({ texto: 'x' }, { ...CTX, lleva_logo: true }));
+check('instrucciones editadas: llegan al modelo con sus marcadores rellenos', (() => {
+  const s = sys({ texto: 'x', reglas: 'MIS REGLAS para [FORMATO] en [ANCHO]x[ALTO]. [LOGO] FIN.', con_logo: 'ESQUINA de [ZONA_ANCHO] por [ZONA_ALTO].', sin_logo: 'NADA DE LOGO.' }, CTX);
+  return s === 'MIS REGLAS para vertical 9:16, EXACTAMENTE 1080x1920 pixeles en 1080x1920. ESQUINA de 48 por 17. FIN.';
+})());
+check('instrucciones editadas y sin logo: usa el texto sin_logo', sys({ texto: 'x', reglas: 'A [LOGO] B', con_logo: 'CON', sin_logo: 'SIN' }, { ...CTX, lleva_logo: false }) === 'A SIN B');
+check('reglas sin el marcador [LOGO]: el párrafo del logo va al final', sys({ texto: 'x', reglas: 'SOLO REGLAS.', con_logo: 'CON' }, CTX) === 'SOLO REGLAS.\n\nCON');
+check('un texto vacío o en blanco usa el del repo', sys({ texto: 'x', reglas: '   ', con_logo: '', sin_logo: null }, CTX) === sys({ texto: 'x' }, CTX));
+check('las instrucciones no se cuelan en el mensaje del cliente', !/MIS REGLAS/.test(P.armarMensajes({ texto: 'x', reglas: 'MIS REGLAS' }, CTX)[1].content));
+
+console.log('\n== n8n/clasificador.js ==');
+const { leerClasificacion, INSTRUCCIONES_JEV } = loadSnippet('n8n/clasificador.js', ['leerClasificacion', 'INSTRUCCIONES_JEV']);
+check('póster con logo', J(leerClasificacion('{"tipo":"poster","logo":true,"comando":""}')) === J({ tipo: 'poster', logo: true, comando: '' }));
+check('póster sin logo', leerClasificacion('{"tipo":"poster","logo":false}').logo === false && leerClasificacion('{"tipo":"poster","logo":"no"}').logo === false && leerClasificacion('{"tipo":"poster","logo":"false"}').logo === false);
+check('el logo solo se quita si lo dice claro', ['{"tipo":"poster"}', '{"tipo":"poster","logo":null}', '{"tipo":"poster","logo":"quizas"}', '{"tipo":"poster","logo":1}'].every((t) => leerClasificacion(t).logo === true));
+check('spam', J(leerClasificacion('{"tipo":"spam"}')) === J({ tipo: 'spam', logo: true, comando: '' }));
+check('comando en su forma normal', J(leerClasificacion('{"tipo":"comando","logo":true,"comando":" SUSPENDER 3 "}')) === J({ tipo: 'comando', logo: true, comando: 'SUSPENDER 3' }));
+check('tolera texto y markdown alrededor del JSON', leerClasificacion('Claro:\n```json\n{"tipo":"spam"}\n```\nListo.').tipo === 'spam');
+check('tolera mayúsculas, acentos y que ya venga como objeto', leerClasificacion('{"tipo":"PÓSTER"}').tipo === 'poster' && leerClasificacion({ tipo: ' Comando ', comando: 'LISTA' }).comando === 'LISTA' && leerClasificacion('{"TIPO":"Spam"}') === null);
+check('etiqueta desconocida, JSON roto o respuesta vacía -> null (el flujo sigue como antes)', ['{"tipo":"venta"}', '{"tipo":', 'no se', '', '   ', '[]', '"spam"', '{}'].every((t) => leerClasificacion(t) === null) && leerClasificacion(null) === null && leerClasificacion(undefined) === null && leerClasificacion(42) === null);
+check('un comando larguísimo se recorta', leerClasificacion({ tipo: 'comando', comando: 'x'.repeat(900) }).comando.length === 200);
+check('las instrucciones de JEV nombran las tres etiquetas, el logo y los comandos', ['spam', 'poster', 'comando', '"logo"', 'SUSPENDER', 'PROGRAMAR', 'DIFUMINAR', 'BORRAR', 'LISTA', 'JSON'].every((t) => INSTRUCCIONES_JEV.includes(t)));
 
 console.log('\n== n8n/comandos.js ==');
 const { interpretarComando } = loadSnippet('n8n/comandos.js', ['interpretarComando']);
@@ -234,14 +272,14 @@ if (!existsSync(exportPath)) {
   console.log('SKIP  no existe ' + exportPath);
 } else {
   const { patchWorkflow } = await import('./n8n-patch-flujo.mjs');
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const copia = JSON.parse(readFileSync(exportPath, 'utf8'));
   const antes = JSON.stringify(copia);
   const out = patchWorkflow(copia, snippets);
   const node = (n) => out.nodes.find((x) => x.name === n);
   const next = (n) => (out.connections[n]?.main?.[0] || []).map((x) => x.node);
 
-  check('82 nodos', out.nodes.length === 82, out.nodes.length);
+  check('90 nodos y 12 notas', out.nodes.length === 102, out.nodes.length);
   check('nombres de nodo sin repetir', new Set(out.nodes.map((n) => n.name)).size === out.nodes.length);
   check('idempotente', JSON.stringify(patchWorkflow(out, snippets)) === JSON.stringify(out));
   check('no muta la entrada', JSON.stringify(copia) === antes);
@@ -323,7 +361,7 @@ if (!existsSync(exportPath)) {
   const code = (n) => node(n)?.parameters?.jsCode || '';
   check('ya no hay nodo de agente ni su modelo', !names.includes('AI Agent') && !names.includes('OpenRouter Chat Model'));
   check('hay Armar prompt y Redactar prompt', names.includes('Armar prompt') && names.includes('Redactar prompt'));
-  check('lo que entraba al agente entra a Armar prompt', ['Init contexto', 'Ronda tope'].every((n) => next(n).includes('Armar prompt')) && !['Init contexto', 'Ronda tope'].some((n) => next(n).includes('AI Agent')), ['Init contexto', 'Ronda tope'].map((n) => next(n).join('+')).join(' | '));
+  check('lo que entraba al agente entra a Armar prompt', ['Init contexto', 'Ronda tope'].every((n) => next(n).includes('Instrucciones del director')) && !['Init contexto', 'Ronda tope'].some((n) => next(n).includes('AI Agent')), ['Init contexto', 'Ronda tope'].map((n) => next(n).join('+')).join(' | '));
   check('Armar prompt -> Redactar prompt', next('Armar prompt').join() === 'Redactar prompt');
   check('Redactar prompt -> Parsear salida y Firmar consumo', ['Parsear salida', 'Firmar consumo'].every((n) => next('Redactar prompt').includes(n)) && next('Redactar prompt').length === 2, next('Redactar prompt').join());
   check('el audio también reporta consumo', next('Transcribir audio').includes('Firmar consumo') && next('Transcribir audio').includes('Firmar settings') && next('Transcribir audio').length === 2, next('Transcribir audio').join());
@@ -418,7 +456,7 @@ if (!existsSync(exportPath)) {
     { nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: texto } }] }, 'Traer settings': { data: { googleDriveFolder: 'https://drive.google.com/drive/folders/ABC' } } } }))[0].json;
   const responder = async (flujo, cmdJson, r) => (await ejecutar(flujo.nodes.find((n) => n.name === 'Armar respuesta').parameters.jsCode, { input: r, nodes: { 'Detectar ruta': cmdJson } }))[0].json;
 
-  check('Detectar ruta: lleva comandos.js y ya no tiene el intérprete escrito a mano', code('Detectar ruta').startsWith(snippets.comandos) && /interpretarComando\(texto, hoy\)/.test(code('Detectar ruta')) && !/var BORRAR = \[/.test(code('Detectar ruta')));
+  check('Detectar ruta: lleva comandos.js y ya no tiene el intérprete escrito a mano', code('Detectar ruta').includes(snippets.comandos) && /interpretarComando\(texto, hoy\)/.test(code('Detectar ruta')) && !/var BORRAR = \[/.test(code('Detectar ruta')));
   check('Armar respuesta: lleva respuestas.js', code('Armar respuesta').startsWith(snippets.respuestas) && /armarRespuesta\(cmd, r, /.test(code('Armar respuesta')));
   const ayuda = node('Enviar ayuda').parameters.textBody;
   check('la ayuda enseña los comandos nuevos y conserva los de antes', ['LISTA', 'DURACION 3 20', 'BORRAR 3', 'SUSPENDER 3', 'ACTIVAR 3', 'PROGRAMAR 3 VIERNES', 'PROGRAMAR 3 SIEMPRE', 'DIFUMINAR 3 SI'].every((t) => ayuda.includes(t)) && /Drive/.test(ayuda), ayuda.slice(0, 120));
@@ -441,7 +479,7 @@ if (!existsSync(exportPath)) {
     // Lo que ya funcionaba tiene que salir idéntico al nodo original (antes del parche).
     const viejos = ['lista', 'Lista.', 'ayuda', 'comandos', 'borrar 3', 'Borra la imagen 3', 'borrar', 'Duración 3 20', 'duracion de la 3 20 segundos', 'duracion todas 12', 'duracion x', 'tiempo 3 20', 'tiempo de entrega 30 minutos', 'hola', 'Tacos al pastor 3x50', ''];
     const distintos = [];
-    for (const t of viejos) { if (J(await detectar(copia, t)) !== J(await detectar(out, t))) distintos.push(t); }
+    for (const t of viejos) { const nuevo = await detectar(out, t); delete nuevo.con_logo; delete nuevo.jev; if (J(await detectar(copia, t)) !== J(nuevo)) distintos.push(t); }
     check('Detectar ruta: ' + viejos.length + ' mensajes de antes dan exactamente lo mismo que el nodo original', distintos.length === 0, distintos.join(' | '));
     const casos = [
       [{ accion: 'duration', index: 3 }, { success: true, data: { index: 3, duration: 20 } }],
@@ -457,6 +495,117 @@ if (!existsSync(exportPath)) {
     for (const [c, r] of casos) { if (J(await responder(copia, c, r)) !== J(await responder(out, c, r))) cambia.push(J(c)); }
     check('Armar respuesta: ' + casos.length + ' respuestas de antes dan exactamente lo mismo que el nodo original', cambia.length === 0, cambia.join(' | '));
   }
+
+  // ===== JEV (clasificador), póster sin logo, instrucciones editables y lienzo =====
+  const { ordenHermanos, ordenarLienzo, SECCIONES } = await import('./n8n-lienzo.mjs');
+  const NOTA = 'n8n-nodes-base.stickyNote';
+  const salida = (n, i) => (out.connections[n]?.main?.[i] || []).map((x) => x.node);
+  const jevNode = node('JEV'), modeloJev = node('Modelo de JEV');
+  check('JEV es un nodo AI Agent con sus instrucciones en System Message', jevNode?.type === '@n8n/n8n-nodes-langchain.agent' && jevNode.parameters.promptType === 'define' && jevNode.parameters.options.systemMessage === INSTRUCCIONES_JEV && /Transcribir audio/.test(jevNode.parameters.text) && /text\?\.body/.test(jevNode.parameters.text));
+  check('si JEV falla el flujo sigue (no se detiene)', jevNode?.onError === 'continueRegularOutput');
+  check('Modelo de JEV: OpenRouter, misma credencial que el audio, temperatura 0', modeloJev?.type === '@n8n/n8n-nodes-langchain.lmChatOpenRouter' && modeloJev.parameters.model === 'deepseek/deepseek-v4.1-flash' && modeloJev.parameters.options.temperature === 0 && J(modeloJev.credentials) === J(node('Transcribir audio').credentials)
+    && J(out.connections['Modelo de JEV']) === J({ ai_languageModel: [[{ node: 'JEV', type: 'ai_languageModel', index: 0 }]] }));
+  check('Traer settings -> Hay texto -> (JEV | Detectar ruta)', next('Traer settings').join() === 'Hay texto' && salida('Hay texto', 0).join() === 'JEV' && salida('Hay texto', 1).join() === 'Detectar ruta' && next('JEV').join() === 'Detectar ruta');
+  check('Hay texto y JEV leen el mismo texto (escrito o audio transcrito)', node('Hay texto').parameters.conditions.conditions[0].leftValue === jevNode.parameters.text && node('Hay texto').parameters.conditions.conditions[0].operator.operation === 'notEmpty');
+  check('Detectar ruta -> Es spam -> (Mensaje ignorado | Es foto)', next('Detectar ruta').join() === 'Es spam' && salida('Es spam', 0).join() === 'Mensaje ignorado' && salida('Es spam', 1).join() === 'Es foto' && node('Mensaje ignorado').type === 'n8n-nodes-base.noOp' && !out.connections['Mensaje ignorado']);
+  check('Detectar ruta: lleva clasificador.js y comandos.js', code('Detectar ruta').startsWith(snippets.clasificador) && code('Detectar ruta').includes(snippets.comandos) && /leerClasificacion\(/.test(code('Detectar ruta').slice(snippets.clasificador.length)));
+
+  const AHORA2 = { year: 2026, month: 10, day: 9, toFormat: () => '20261009-120000', setZone() { return this; } };
+  const correr = (jsCode, { input = {}, nodes = {}, noEjecutados = [] } = {}) =>
+    new AsyncFunction('$', '$input', '$execution', '$runIndex', '$vars', '$now', jsCode)(
+      (n) => { if (noEjecutados.includes(n)) throw new Error('Node ' + n + ' has not been executed'); const item = { json: nodes[n] || {} }; return { first: () => item, last: () => item, all: () => [item] }; },
+      { first: () => ({ json: input }) }, { id: '1' }, 0, {}, AHORA2);
+  // `jev` = lo que contestó el agente (undefined = no corrió; un objeto {error} = falló).
+  const rutaCon = async (flujo, texto, jev) => (await correr(flujo.nodes.find((n) => n.name === 'Detectar ruta').parameters.jsCode, {
+    nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: texto } }] }, 'Traer settings': { data: { googleDriveFolder: 'https://drive.google.com/drive/folders/ABC' } }, JEV: jev === undefined ? {} : (typeof jev === 'string' ? { output: jev } : jev) },
+    noEjecutados: jev === undefined ? ['JEV', 'Transcribir audio'] : ['Transcribir audio'],
+  }))[0].json;
+
+  let dj = await rutaCon(out, 'hola buenas tardes', '{"tipo":"spam","logo":true,"comando":""}');
+  check('JEV dice spam -> ruta spam', dj.ruta === 'spam' && dj.jev === 'spam');
+  dj = await rutaCon(out, 'Hamburguesa doble $89 sin logo', '{"tipo":"poster","logo":false,"comando":""}');
+  check('JEV dice póster sin logo -> póster y con_logo false', dj.ruta === 'poster' && dj.con_logo === false && dj.texto === 'Hamburguesa doble $89 sin logo');
+  dj = await rutaCon(out, 'Pizza 2x1 $199', '{"tipo":"poster","logo":true}');
+  check('JEV dice póster -> póster con logo', dj.ruta === 'poster' && dj.con_logo === true);
+  dj = await rutaCon(out, 'ya no muestres la segunda', '{"tipo":"comando","logo":true,"comando":"SUSPENDER 2"}');
+  check('JEV traduce una frase libre a un comando', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2 && dj.bodyToSign === '{"action":"suspend","index":2}');
+  dj = await rutaCon(out, 'quitame la 4', '{"tipo":"comando","comando":"BORRAR 4"}');
+  check('BORRAR pedido en frase libre sigue pidiendo confirmación (primero la lista)', dj.ruta === 'comando' && dj.accion === 'delete' && dj.index === 4 && dj.bodyToSign === '{"action":"list"}');
+  dj = await rutaCon(out, 'programar la 3 para los fines de semana', '{"tipo":"comando","comando":"PROGRAMAR 3 SABADO DOMINGO"}');
+  check('un comando que a mano no se entendía, con JEV sí', dj.ruta === 'comando' && dj.bodyToSign === '{"action":"schedule","index":3,"schedule":{"days":[0,6],"from":null,"to":null}}', dj.bodyToSign);
+  dj = await rutaCon(out, 'cambia algo del carrusel', '{"tipo":"comando","comando":"HAZ MAGIA"}');
+  check('JEV dice comando pero no se entiende cuál -> ayuda', dj.ruta === 'ayuda');
+  dj = await rutaCon(out, 'Suspender 2', '{"tipo":"spam"}');
+  check('un comando escrito tal cual gana aunque JEV diga spam', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2);
+  dj = await rutaCon(out, 'borrar 3', '{"tipo":"comando","comando":"SUSPENDER 9"}');
+  check('un comando escrito tal cual gana aunque JEV entienda otro', dj.accion === 'delete' && dj.index === 3);
+  dj = await rutaCon(out, 'ayuda', '{"tipo":"spam"}');
+  check('AYUDA escrita tal cual no se trata como spam', dj.ruta === 'ayuda');
+  const sinJev = [];
+  for (const [t, jev] of [['hola', undefined], ['Tacos al pastor 3x50', { error: 'timeout' }], ['Tacos al pastor 3x50', 'no entendi'], ['Tacos 3x50', '{"tipo":"otra cosa"}'], ['lista', undefined]]) {
+    const a = await rutaCon(out, t, jev), b = await rutaCon(out, t, undefined);
+    if (a.jev !== '' || a.con_logo !== true || J(a) !== J(b) || a.ruta === 'spam') sinJev.push(t + ' / ' + J(jev));
+  }
+  check('si JEV no corre, falla o contesta algo raro, todo sigue como antes (póster con logo, comandos exactos)', sinJev.length === 0, sinJev.join(' | '));
+  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', image: { id: 'IMG1', caption: 'tacos', mime_type: 'image/jpeg' } }] }, 'Traer settings': { data: { googleDriveFolder: 'ABC' } }, JEV: { output: '{"tipo":"spam"}' } } }))[0].json;
+  check('una foto va a Drive diga lo que diga JEV', dj.ruta === 'foto' && dj.fileName === 'tacos.jpg');
+
+  // Póster sin logo
+  check('Fijar foto -> Con logo; sí: el camino de siempre; no: solo ajustar el tamaño', next('Fijar foto').join() === 'Con logo' && salida('Con logo', 0).slice().sort().join() === 'Descargar logo,Optimizar imagen' && salida('Con logo', 1).join() === 'Optimizar imagen sin logo' && next('Optimizar imagen sin logo').join() === 'Subir imagen compuesta');
+  check('Optimizar imagen sin logo hace lo mismo que Optimizar imagen', J(node('Optimizar imagen sin logo').parameters) === J(node('Optimizar imagen').parameters) && node('Optimizar imagen sin logo').type === node('Optimizar imagen').type);
+  check('Con logo pregunta por lleva_logo de Init contexto', /Init contexto.*lleva_logo/.test(node('Con logo').parameters.conditions.conditions[0].leftValue) && node('Con logo').parameters.conditions.conditions[0].operator.operation === 'true');
+  const iniCon = async (detectar) => (await run('Init contexto', { input: {}, nodes: { ...ctxSettings({ defaultOrientation: 'horizontal' }), 'Detectar ruta': detectar } }))[0].json;
+  check('Init contexto: lleva_logo sale de Detectar ruta (sin dato = con logo)', (await iniCon({ con_logo: false })).lleva_logo === false && (await iniCon({ con_logo: true })).lleva_logo === true && (await iniCon({})).lleva_logo === true);
+  const icSin = { ...ic4k, lleva_logo: false };
+  const sinLogoMsgs = JSON.parse((await run('Armar prompt', { input: { texto: 'PIZZA $99 sin logo', ronda: 0 }, nodes: { 'Init contexto': icSin } }))[0].json.body).messages;
+  check('Armar prompt sin logo: el modelo no recibe la regla de la esquina', !/esquina INFERIOR DERECHA/.test(sinLogoMsgs[0].content) && /SIN LOGO/.test(sinLogoMsgs[0].content));
+  const parSin = (await run('Parsear salida', { input: { choices: [{ message: { content: '{"producto":"PIZZA","prompt_final":"A poster"}' } }] }, nodes: { 'Init contexto': icSin } }))[0].json;
+  check('Parsear salida sin logo: reglas finales sin la esquina', parSin.valido === 'si' && /NO LOGO/.test(parSin.prompt_final) && !/LOGO CORNER/.test(parSin.prompt_final) && /LOGO CORNER/.test(parsed.prompt_final));
+  const vista = async (ic, noEjecutados) => (await correr(code('Armar vista'), { nodes: { 'Init contexto': ic, Variables: { remitente: '521' } }, noEjecutados })).length;
+  check('Armar vista toma la imagen del nodo que sí corrió', /Optimizar imagen sin logo/.test(code('Armar vista')) && /Componer logo/.test(code('Armar vista')) && (await vista(icSin, ['Componer logo'])) === 1 && (await vista(ic4k, ['Optimizar imagen sin logo'])) === 1);
+
+  // Instrucciones editables
+  const inst = node('Instrucciones del director');
+  const campos = Object.fromEntries((inst?.parameters.assignments.assignments || []).map((a) => [a.name, a.value]));
+  check('Instrucciones del director: Edit Fields con los tres textos de fábrica, deja pasar lo demás', inst?.type === 'n8n-nodes-base.set' && inst.parameters.includeOtherFields === true && campos.reglas === P.REGLAS_DIRECTOR && campos.con_logo === P.LOGO_CON && campos.sin_logo === P.LOGO_SIN);
+  check('ningún texto editable empieza con "=" ni lleva {{ (n8n lo tomaría por expresión)', [campos.reglas, campos.con_logo, campos.sin_logo, INSTRUCCIONES_JEV].every((t) => typeof t === 'string' && t[0] !== '=' && !t.includes('{{')));
+  check('Init contexto y Ronda tope -> Instrucciones del director -> Armar prompt', ['Init contexto', 'Ronda tope'].every((n) => next(n).includes('Instrucciones del director') && !next(n).includes('Armar prompt')) && next('Instrucciones del director').join() === 'Armar prompt');
+  const editado = JSON.parse((await run('Armar prompt', { input: { texto: 'TACOS', reglas: 'REGLAS MIAS [ANCHO]x[ALTO]. [LOGO]', con_logo: 'ESQUINA MIA', sin_logo: 'SIN MIA' }, nodes: { 'Init contexto': ic4k } }))[0].json.body).messages;
+  check('Armar prompt usa las instrucciones editadas en el nodo', editado[0].content === 'REGLAS MIAS 2160x3840. ESQUINA MIA' && /TACOS/.test(editado[1].content));
+
+  // Lo que el usuario edita en n8n no se pisa al volver a aplicar el script
+  const tocado = JSON.parse(JSON.stringify(out));
+  const tn = (n) => tocado.nodes.find((x) => x.name === n);
+  tn('JEV').parameters.options.systemMessage = 'MIS INSTRUCCIONES DE JEV';
+  tn('Modelo de JEV').parameters.model = 'otro/modelo';
+  tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'reglas').value = 'MIS REGLAS';
+  tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'sin_logo').value = '';
+  const otraVez = patchWorkflow(tocado, snippets);
+  const on = (n) => otraVez.nodes.find((x) => x.name === n);
+  const oc = Object.fromEntries(on('Instrucciones del director').parameters.assignments.assignments.map((a) => [a.name, a.value]));
+  check('volver a aplicar el script no pisa lo editado en n8n (JEV, su modelo, instrucciones)', on('JEV').parameters.options.systemMessage === 'MIS INSTRUCCIONES DE JEV' && on('Modelo de JEV').parameters.model === 'otro/modelo' && oc.reglas === 'MIS REGLAS' && oc.sin_logo === '' && oc.con_logo === P.LOGO_CON && JSON.stringify(otraVez) === JSON.stringify(tocado));
+
+  // Lienzo
+  const sinOrdenar = patchWorkflow(copia, snippets, { lienzo: false });
+  check('acomodar el lienzo no cambia el orden en que corren las ramas hermanas', J(ordenHermanos(sinOrdenar)) === J(ordenHermanos(out)) && ordenHermanos(out).length >= 7, ordenHermanos(out).join(' ; '));
+  check('acomodar solo mueve nodos: mismos nodos, parámetros y conexiones', byName(sinOrdenar.nodes.filter((n) => n.type !== NOTA)) === byName(out.nodes.filter((n) => n.type !== NOTA)) && links(sinOrdenar.connections) === links(out.connections));
+  const arriba = (a, b) => node(a).position[1] < node(b).position[1];
+  check('el consumo sigue arriba de todo; el logo se descarga antes de ajustar el póster', out.nodes.every((n) => n.name === 'Firmar consumo' || n.name === 'Reportar consumo' || n.type === NOTA || arriba('Firmar consumo', n.name)) && arriba('Descargar logo', 'Optimizar imagen') && arriba('Info logo', 'Merge') && arriba('Send a text message1', 'Preparar Wan'));
+  const notas = out.nodes.filter((n) => n.type === NOTA);
+  check('12 notas, una por sección, numeradas y con texto', notas.length === 12 && SECCIONES.length === 12 && notas.every((n, i) => n.parameters.content.startsWith('## ' + (i + 1) + ' · ') && n.parameters.content.length > 60));
+  const celdas = out.nodes.filter((n) => n.type !== NOTA).map((n) => n.position.join());
+  check('ningún nodo queda encima de otro', new Set(celdas).size === celdas.length);
+  check('cada nodo queda dentro de la nota de su sección', SECCIONES.every((s) => { const nota = node('Nota ' + s.n + ' · ' + s.titulo); const [x, y] = nota.position; return Object.keys(s.nodos).every((nombre) => { const [nx, ny] = node(nombre).position; return nx >= x && nx + 100 <= x + nota.parameters.width && ny >= y + 100 && ny + 100 <= y + nota.parameters.height; }); }));
+  check('las notas de secciones distintas no se enciman', notas.every((a, i) => notas.every((b, k) => k <= i || a.position[0] + a.parameters.width <= b.position[0] || b.position[0] + b.parameters.width <= a.position[0] || a.position[1] + a.parameters.height <= b.position[1] || b.position[1] + b.parameters.height <= a.position[1])));
+  const movido = JSON.parse(JSON.stringify(out));
+  movido.nodes.find((n) => n.name === 'Firmar consumo').position = [0, 5000];
+  check('si alguien mueve un nodo en n8n, volver a aplicar el script lo regresa a su lugar', J(patchWorkflow(movido, snippets)) === J(out));
+  const huerfano = JSON.parse(JSON.stringify(out));
+  huerfano.nodes.push({ name: 'Nodo nuevo', type: 'n8n-nodes-base.noOp', typeVersion: 1, position: [0, 0], parameters: {} });
+  let msgL = '';
+  try { ordenarLienzo(huerfano); } catch (err) { msgL = err.message; }
+  check('un nodo que el script no conoce detiene el acomodo con un mensaje claro', /Nodo nuevo/.test(msgL), msgL);
+  if (yaParchado) check('en n8n las ramas hermanas corren en el orden esperado', J(ordenHermanos(copia)) === J(ordenHermanos(out)), ordenHermanos(copia).join(' ; '));
 }
 
 console.log(`\n${pass}/${total} pruebas OK`);

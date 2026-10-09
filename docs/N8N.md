@@ -11,6 +11,9 @@ Por defecto el webhook **agrega** imágenes sin borrar las existentes
 (`mode: "append"`); las URLs repetidas se omiten. Si quieres reemplazar todo el
 carrusel, envía `mode: "replace"`.
 
+> **¿Buscas cómo funciona el flujo de WhatsApp, dónde se editan las instrucciones de la IA
+> (JEV y el director) o cómo probarlo?** Está en [N8N-FLUJO.md](N8N-FLUJO.md), paso por paso.
+
 ---
 
 ## 1. Requisitos
@@ -463,7 +466,8 @@ En el flujo lo hacen dos nodos que salen de `Generar Wan` y de `Generar Qwen`:
 - El reporte **nunca detiene el flujo**: si el carrusel responde con error o no
   responde en 10 s, el póster se envía igual. Va arriba de `Fijar foto` en el
   lienzo para que corra antes de esperar la aprobación del cliente.
-- Los tokens del modelo de chat (`AI Agent`) no se reportan: el nodo no los expone.
+- Los tokens de **JEV** (el clasificador, un nodo `AI Agent`) no se reportan: ese tipo de nodo no los expone.
+  El prompt del póster sí se reporta, porque se redacta con una llamada HTTP (`Redactar prompt`).
 
 ## 13b. Tamaño del póster, prompt y consumo de texto
 
