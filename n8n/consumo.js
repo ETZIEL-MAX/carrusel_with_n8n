@@ -7,6 +7,9 @@
 // que reportar (un texto sin tokens).
 function armarConsumo(gen, executionId, runIndex) {
   var g = gen || {};
+  // Un nodo HTTP en continueRegularOutput (la transcripcion) deja { error } si falla:
+  // no hubo consumo que reportar.
+  if (g.error) { return null; }
   if (Array.isArray(g.choices)) { return armarConsumoTexto(g, executionId, runIndex); }
   var out = {
     eventId: String(executionId) + '-gen-' + String(runIndex),

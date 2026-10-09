@@ -26,13 +26,13 @@ function tamanoPoster(cfg) {
   return { formato: formato, ancho: base.ancho, alto: base.alto, texto: base.texto };
 }
 
-// El logo mide 420x224 con 50 px de margen en un Full HD (2 073 600 px). Con otro tamaño
-// se escala con la raiz del area, para que el logo se vea igual de grande respecto al poster.
+// El logo mide 420x224 con 50 px de margen en un poster Full HD (lado corto 1080), sea cual
+// sea el formato. Con otra resolucion se escala con el lado corto: HD = 2/3, 2K = 4/3, 4K = x2.
 // zonaAnchoPct / zonaAltoPct = rectangulo de la esquina inferior derecha que debe quedar
 // libre (logo + margen + un colchon de 40 px escalados), en porcentaje del lienzo.
 function zonaLogo(ancho, alto) {
   var an = Number(ancho) || 1920, al = Number(alto) || 1080;
-  var escala = Math.sqrt(an * al / 2073600);
+  var escala = Math.min(an, al) / 1080;
   var logoAncho = Math.round(420 * escala), logoAlto = Math.round(224 * escala);
   var margen = Math.round(50 * escala), colchon = Math.round(40 * escala);
   return {

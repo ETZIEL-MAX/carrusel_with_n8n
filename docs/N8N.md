@@ -455,12 +455,28 @@ En el flujo lo hacen dos nodos que salen de `Generar Wan` y de `Generar Qwen`:
   lienzo para que corra antes de esperar la aprobación del cliente.
 - Los tokens del modelo de chat (`AI Agent`) no se reportan: el nodo no los expone.
 
-## 13b. Tamaño del póster
+## 13b. Tamaño del póster, prompt y consumo de texto
 
 El cliente elige formato y resolución en el panel (`defaultOrientation` + `posterResolution`).
 `POST /api/settings-read/USERx` entrega `posterWidth` y `posterHeight`; el flujo los usa tal cual y,
-si faltan (servidor viejo), cae en la tabla Full HD de siempre. Tabla de tamaños en `docs/API.md`
-(sección «Ajustes de generación»).
+si faltan (servidor viejo), cae en la tabla Full HD de siempre. La tabla de tamaños está en
+`docs/API.md` (sección «Ajustes de generación»).
+
+Lo que hace el flujo con ese tamaño (fuente en `n8n/formato.js`):
+
+- **Wan** recibe como máximo 2048 px de lado (`tamanoGeneracion`) y **Qwen** lo que genera por defecto
+  (el modelo `qwen-image-3.0-pro` no tiene opción de tamaño). El nodo `Optimizar imagen` lleva el póster
+  al tamaño del panel escalando por área, así que un 2K o 4K puede salir ampliado.
+- **El logo** mide 420×224 con 50 px de margen en Full HD (lado corto 1080), en cualquier formato, y escala
+  con el lado corto: HD ×2/3, 2K ×4/3, 4K ×2 (`zonaLogo`). Se coloca en la esquina del póster real (`posicionLogo`).
+- **El prompt** ya no lo redacta un nodo de agente (no entrega los tokens que gasta): `Armar prompt` arma
+  los mensajes (`n8n/prompt.js`) y `Redactar prompt` llama a OpenRouter (`deepseek/deepseek-v4.1-flash`,
+  misma credencial que la transcripción) y devuelve `usage`. Las reglas pedían una esquina «vacía» y el modelo
+  dejaba el lado derecho en blanco; ahora piden la escena completa y que solo la esquina del logo continúe
+  el fondo liso.
+- **Consumo**: `Firmar consumo` recibe ahora la imagen (`Generar Wan`/`Generar Qwen`), el texto
+  (`Redactar prompt`) y el audio (`Transcribir audio`) y manda `kind: "image"` o `kind: "text"` con los tokens
+  del proveedor (`prompt_tokens`/`completion_tokens`). Si una llamada falló o no trae tokens, no reporta nada.
 
 ---
 

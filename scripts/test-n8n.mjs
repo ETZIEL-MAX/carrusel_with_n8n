@@ -77,6 +77,7 @@ check('audio (transcripción): también kind text', (() => {
 check('texto sin usage -> no se reporta', armarConsumo({ choices: [{ message: { content: 'FALSE' } }] }, '77', 0) === null);
 check('texto con tokens en cero -> no se reporta', armarConsumo({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }, '77', 0) === null);
 check('la imagen sigue igual', armarConsumo({ model: 'wan2.7-image-pro', usage: {} }, '77', 1).eventId === '77-gen-1');
+check('una llamada que falló (continueRegularOutput deja {error}) -> no se reporta', armarConsumo({ error: { message: 'fallo' } }, '77', 0) === null && armarConsumo({ error: 'x', choices: [] }, '77', 0) === null);
 
 console.log('\n== n8n/formato.js ==');
 const loadAll = (paths, names) => new Function(paths.map((p) => readFileSync(join(ROOT, p), 'utf8')).join('\n') + '\n; return {' + names.join(',') + '};')();
@@ -135,7 +136,7 @@ if (!existsSync(exportPath)) {
   console.log('SKIP  no existe ' + exportPath);
 } else {
   const { patchWorkflow } = await import('./n8n-patch-flujo.mjs');
-  const snippets = { firma: readFileSync(join(ROOT, 'n8n/firma.js'), 'utf8'), consumo: readFileSync(join(ROOT, 'n8n/consumo.js'), 'utf8') };
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const copia = JSON.parse(readFileSync(exportPath, 'utf8'));
   const antes = JSON.stringify(copia);
   const out = patchWorkflow(copia, snippets);
@@ -148,7 +149,16 @@ if (!existsSync(exportPath)) {
   check('no muta la entrada', JSON.stringify(copia) === antes);
   // n8n reordena claves y conexiones al guardar: se compara sin importar el orden.
   const canon = (o) => JSON.stringify(o, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort()) : v));
-  const byName = (nodes) => canon(nodes.slice().sort((a, b) => a.name.localeCompare(b.name)));
+  // Lo guardado se compara por comportamiento: la posición en el lienzo no cuenta (un nodo se puede mover) y
+  // n8n omite los valores por defecto al guardar (resource 'row' y condition 'eq' de la tabla).
+  const sinLayout = (n) => {
+    const { position, ...rest } = n;
+    const p = JSON.parse(JSON.stringify(rest.parameters || {}));
+    if (p.resource === 'row') delete p.resource;
+    for (const c of p.filters?.conditions || []) if (c.condition === 'eq') delete c.condition;
+    return { ...rest, parameters: p };
+  };
+  const byName = (nodes) => canon(nodes.map(sinLayout).sort((a, b) => a.name.localeCompare(b.name)));
   const links = (conns) => Object.entries(conns).flatMap(([s, v]) => Object.entries(v).flatMap(([t, outs]) => outs.flatMap((arr, i) => (arr || []).map((x) => [s, t, i, x.node, x.index].join('|'))))).sort().join('\n');
   if (yaParchado) check('lo guardado en n8n ya es el flujo parchado', byName(out.nodes) === byName(copia.nodes) && links(out.connections) === links(copia.connections));
   else check('la entrada tenía 78 nodos', copia.nodes.length === 78, copia.nodes.length);
@@ -183,10 +193,15 @@ if (!existsSync(exportPath)) {
 
   // Ejecutar de verdad el código parchado, con las variables de n8n simuladas.
   const AsyncFunction = (async () => {}).constructor;
-  const run = (name, { token, input = {}, executionId = '1', runIndex = 0 }) =>
-    new AsyncFunction('$', '$input', '$execution', '$runIndex', '$vars', node(name).parameters.jsCode)(
-      (n) => ({ first: () => ({ json: n === 'Variables' ? { token } : {} }), all: () => [] }),
-      { first: () => ({ json: input }) }, { id: executionId }, runIndex, { WEBHOOK_SECRET: 'no-se-debe-usar' });
+  // `nodes` = lo que devuelven $('Nodo').first()/last() de otros nodos; `self` = el `this` del nodo.
+  const run = (name, { token, input = {}, executionId = '1', runIndex = 0, nodes = {}, binary, self } = {}) =>
+    new AsyncFunction('$', '$input', '$execution', '$runIndex', '$vars', node(name).parameters.jsCode).call(
+      self || {},
+      (n) => {
+        const item = { json: n === 'Variables' ? { token } : (nodes[n] || {}), binary: nodes[n + '#binary'] };
+        return { first: () => item, last: () => item, all: () => [item] };
+      },
+      { first: () => ({ json: input, binary }) }, { id: executionId }, runIndex, { WEBHOOK_SECRET: 'no-se-debe-usar' });
 
   for (const [token, firmado] of [['a'.repeat(64), (ts, b) => b], ['crt_abc', (ts, b) => ts + '.' + b]]) {
     const j = (await run('Firmar comando', { token, input: { bodyToSign: '{"action":"list"}' } }))[0].json;
@@ -204,6 +219,65 @@ if (!existsSync(exportPath)) {
     try { await run(n, { token: '' }); } catch (e) { msg = e.message; }
     check(n + ' sin token -> se detiene con error claro', msg === 'Este cliente no tiene token en la tabla whatsapp_numeros', msg);
   }
+
+  // ===== Formato por resolución, prompt por HTTP y consumo de texto =====
+  const names = out.nodes.map((n) => n.name);
+  const code = (n) => node(n)?.parameters?.jsCode || '';
+  check('ya no hay nodo de agente ni su modelo', !names.includes('AI Agent') && !names.includes('OpenRouter Chat Model'));
+  check('hay Armar prompt y Redactar prompt', names.includes('Armar prompt') && names.includes('Redactar prompt'));
+  check('lo que entraba al agente entra a Armar prompt', ['Init contexto', 'Ronda tope'].every((n) => next(n).includes('Armar prompt')) && !['Init contexto', 'Ronda tope'].some((n) => next(n).includes('AI Agent')), ['Init contexto', 'Ronda tope'].map((n) => next(n).join('+')).join(' | '));
+  check('Armar prompt -> Redactar prompt', next('Armar prompt').join() === 'Redactar prompt');
+  check('Redactar prompt -> Parsear salida y Firmar consumo', ['Parsear salida', 'Firmar consumo'].every((n) => next('Redactar prompt').includes(n)) && next('Redactar prompt').length === 2, next('Redactar prompt').join());
+  check('el audio también reporta consumo', next('Transcribir audio').includes('Firmar consumo') && next('Transcribir audio').includes('Firmar settings') && next('Transcribir audio').length === 2, next('Transcribir audio').join());
+  const rp = node('Redactar prompt');
+  check('Redactar prompt: OpenRouter con la misma credencial que el audio', rp?.parameters.url === 'https://openrouter.ai/api/v1/chat/completions' && J(rp.credentials) === J(node('Transcribir audio').credentials) && rp.parameters.nodeCredentialType === 'openRouterApi', J(rp?.credentials));
+  check('Redactar prompt: manda el cuerpo que arma Armar prompt y reintenta', rp?.parameters.jsonBody === '={{ $json.body }}' && rp.parameters.options.timeout === 120000 && rp.retryOnFail === true && rp.maxTries === 2);
+  const existen = new Set(names);
+  const rotas = Object.entries(out.connections).flatMap(([s, v]) => (existen.has(s) ? [] : [s + ' (origen)']).concat(Object.values(v).flatMap((outs) => outs.flatMap((arr) => (arr || []).filter((x) => !existen.has(x.node)).map((x) => s + ' -> ' + x.node)))));
+  check('ninguna conexión apunta a un nodo que no existe', rotas.length === 0, rotas.join(', '));
+  check('Init contexto: usa tamanoPoster y ya no tiene la tabla propia', code('Init contexto').startsWith(snippets.formato) && /tamanoPoster\(/.test(code('Init contexto')) && !/var FORMATOS = \{/.test(code('Init contexto')));
+  check('Parsear salida: reglas de lienzo completo y respuesta HTTP', code('Parsear salida').startsWith(snippets.formato) && /reglasLayout\(/.test(code('Parsear salida')) && /choices/.test(code('Parsear salida')) && !/on the left or the top/.test(code('Parsear salida')));
+  check('el logo se escala con el formato', /logo_ancho/.test(J(node('Redimensionar logo').parameters)) && /logo_alto/.test(J(node('Redimensionar logo').parameters)) && /posicionLogo\(/.test(code('Calcular posicion')));
+  check('Preparar Wan pide un tamaño que el modelo acepta', code('Preparar Wan').startsWith(snippets.formato) && /tamanoGeneracion\(/.test(code('Preparar Wan')));
+  check('Firmar consumo no reporta si no hay tokens', /if \(!consumo\) \{ return \[\]; \}/.test(code('Firmar consumo')));
+  check('Armar prompt: lleva formato.js y prompt.js', code('Armar prompt').startsWith(snippets.formato) && code('Armar prompt').includes(snippets.prompt));
+
+  // Ejecutar de verdad los nodos nuevos o cambiados, con lo que mandaría n8n.
+  const ic4k = { formato: 'vertical', ancho: 2160, alto: 3840, formato_texto: 'vertical 9:16, EXACTAMENTE 2160x3840 pixeles', logo_ancho: 840, logo_alto: 448, logo_margen: 100 };
+  const body = JSON.parse((await run('Armar prompt', { input: { texto: 'PIZZA 2X1 $99', producto: '', ronda: 0, prompt_base: '', colorPalette: ['#112233'] }, nodes: { 'Init contexto': ic4k } }))[0].json.body);
+  check('Armar prompt: cuerpo válido para OpenRouter', body.model === 'deepseek/deepseek-v4.1-flash' && body.messages.length === 2 && /PIZZA 2X1 \$99/.test(body.messages[1].content) && /lienzo 2160x3840/.test(body.messages[0].content), body.model);
+  const parsed = (await run('Parsear salida', { input: { id: 'gen-1', choices: [{ message: { content: '{"producto":"PIZZA","prompt_final":"A poster of pizza"}' } }], usage: {} }, nodes: { 'Init contexto': ic4k } }))[0].json;
+  check('Parsear salida: entiende la respuesta HTTP y agrega las reglas del formato', parsed.valido === 'si' && parsed.producto === 'PIZZA' && /EXACTLY 2160x3840 pixels/.test(parsed.prompt_final) && /FULL BLEED/.test(parsed.prompt_final) && /VERTICAL \(portrait\)/.test(parsed.prompt_final), parsed.valido);
+  check('Parsear salida: no repite las reglas dos veces', (parsed.prompt_final.match(/FINAL LAYOUT RULES/g) || []).length === 1);
+  const falso = (await run('Parsear salida', { input: { choices: [{ message: { content: 'FALSE' } }] }, nodes: { 'Init contexto': ic4k } }))[0].json;
+  check('Parsear salida: FALSE sigue siendo no válido', falso.valido === 'no' && falso.prompt_final === '');
+  const viejo = (await run('Parsear salida', { input: { output: '{"producto":"X","prompt_final":"Y"}' }, nodes: { 'Init contexto': ic4k } }))[0].json;
+  check('Parsear salida: la salida del agente vieja también se entiende', viejo.valido === 'si');
+  const ctxSettings = (o) => ({ 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: 'hola' } }] }, 'Traer settings': { data: o } });
+  const ini = (await run('Init contexto', { input: {}, nodes: ctxSettings({ defaultOrientation: 'vertical', posterWidth: 2160, posterHeight: 3840, googleDriveFolder: 'https://drive.google.com/drive/folders/ABC123' }) }))[0].json;
+  check('Init contexto: toma el tamaño del servidor y escala el logo', ini.formato === 'vertical' && ini.ancho === 2160 && ini.alto === 3840 && ini.logo_ancho === 840 && ini.logo_alto === 448 && ini.logo_margen === 100 && /2160x3840/.test(ini.formato_texto) && ini.googleDriveFolder === 'ABC123', J(ini).slice(0, 220));
+  const ini0 = (await run('Init contexto', { input: {}, nodes: ctxSettings({ defaultOrientation: 'cuadrado' }) }))[0].json;
+  check('Init contexto: sin tamaño del servidor -> Full HD de siempre', ini0.formato === 'cuadrado' && ini0.ancho === 1080 && ini0.alto === 1080 && ini0.logo_ancho === 420 && ini0.logo_margen === 50, J(ini0).slice(0, 160));
+  const pos = (await run('Calcular posicion', { nodes: { 'Init contexto': ic4k, 'Info poster': { size: { width: 2160, height: 3840 } } } }))[0].json;
+  check('Calcular posicion: el logo grande va en la esquina del póster 4K', pos.posX === 2160 - 840 - 100 && pos.posY === 3840 - 448 - 100 && pos.lw === 840, J(pos));
+  const chico = (await run('Calcular posicion', { nodes: { 'Init contexto': ic4k, 'Info poster': { size: { width: 300, height: 200 } } } }))[0].json;
+  check('Calcular posicion: si el generador devolvió algo chico, el logo no queda fuera', chico.posX >= 0 && chico.posY >= 0, J(chico));
+  const wanBody = JSON.parse((await run('Preparar Wan', {
+    nodes: { 'Init contexto': { ancho: 3840, alto: 2160 }, 'Parsear salida': { prompt_final: 'P' } },
+    input: {}, binary: { data: { mimeType: 'image/png' } },
+    self: { helpers: { getBinaryDataBuffer: async () => Buffer.from('img') } },
+  }))[0].json.body);
+  check('Preparar Wan: 4K se pide a 2048x1152 (el póster se lleva a 4K después)', wanBody.parameters.size === '2048*1152', wanBody.parameters.size);
+  const wanFull = JSON.parse((await run('Preparar Wan', {
+    nodes: { 'Init contexto': { ancho: 1920, alto: 1080 }, 'Parsear salida': { prompt_final: 'P' } },
+    input: {}, binary: { data: { mimeType: 'image/png' } },
+    self: { helpers: { getBinaryDataBuffer: async () => Buffer.from('img') } },
+  }))[0].json.body);
+  check('Preparar Wan: Full HD se pide como siempre (1920*1080)', wanFull.parameters.size === '1920*1080', wanFull.parameters.size);
+  const chat = { model: 'deepseek/deepseek-v4.1-flash', choices: [{ message: { content: '{}' } }], usage: { prompt_tokens: 1319, completion_tokens: 3800, total_tokens: 5119 } };
+  j = (await run('Firmar consumo', { token: 'crt_abc', input: chat, executionId: '77', runIndex: 4 }))[0].json;
+  check('Firmar consumo: reporta el texto', JSON.parse(j.body).kind === 'text' && JSON.parse(j.body).eventId === '77-txt-4' && j.signature === ref('crt_abc', j.timestamp + '.' + j.body));
+  check('Firmar consumo: un texto sin tokens no reporta nada', (await run('Firmar consumo', { token: 'crt_abc', input: { choices: [{ message: { content: 'FALSE' } }] } })).length === 0);
 }
 
 console.log(`\n${pass}/${total} pruebas OK`);
