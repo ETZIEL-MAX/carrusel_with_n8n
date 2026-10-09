@@ -161,17 +161,37 @@ check('un texto vacío o en blanco usa el del repo', sys({ texto: 'x', reglas: '
 check('las instrucciones no se cuelan en el mensaje del cliente', !/MIS REGLAS/.test(P.armarMensajes({ texto: 'x', reglas: 'MIS REGLAS' }, CTX)[1].content));
 
 console.log('\n== n8n/clasificador.js ==');
-const { leerClasificacion, INSTRUCCIONES_JEV } = loadSnippet('n8n/clasificador.js', ['leerClasificacion', 'INSTRUCCIONES_JEV']);
-check('póster con logo', J(leerClasificacion('{"tipo":"poster","logo":true,"comando":""}')) === J({ tipo: 'poster', logo: true, comando: '' }));
-check('póster sin logo', leerClasificacion('{"tipo":"poster","logo":false}').logo === false && leerClasificacion('{"tipo":"poster","logo":"no"}').logo === false && leerClasificacion('{"tipo":"poster","logo":"false"}').logo === false);
-check('el logo solo se quita si lo dice claro', ['{"tipo":"poster"}', '{"tipo":"poster","logo":null}', '{"tipo":"poster","logo":"quizas"}', '{"tipo":"poster","logo":1}'].every((t) => leerClasificacion(t).logo === true));
-check('spam', J(leerClasificacion('{"tipo":"spam"}')) === J({ tipo: 'spam', logo: true, comando: '' }));
-check('comando en su forma normal', J(leerClasificacion('{"tipo":"comando","logo":true,"comando":" SUSPENDER 3 "}')) === J({ tipo: 'comando', logo: true, comando: 'SUSPENDER 3' }));
-check('tolera texto y markdown alrededor del JSON', leerClasificacion('Claro:\n```json\n{"tipo":"spam"}\n```\nListo.').tipo === 'spam');
-check('tolera mayúsculas, acentos y que ya venga como objeto', leerClasificacion('{"tipo":"PÓSTER"}').tipo === 'poster' && leerClasificacion({ tipo: ' Comando ', comando: 'LISTA' }).comando === 'LISTA' && leerClasificacion('{"TIPO":"Spam"}') === null);
-check('etiqueta desconocida, JSON roto o respuesta vacía -> null (el flujo sigue como antes)', ['{"tipo":"venta"}', '{"tipo":', 'no se', '', '   ', '[]', '"spam"', '{}'].every((t) => leerClasificacion(t) === null) && leerClasificacion(null) === null && leerClasificacion(undefined) === null && leerClasificacion(42) === null);
-check('un comando larguísimo se recorta', leerClasificacion({ tipo: 'comando', comando: 'x'.repeat(900) }).comando.length === 200);
-check('las instrucciones de JEV nombran las tres etiquetas, el logo y los comandos', ['spam', 'poster', 'comando', '"logo"', 'SUSPENDER', 'PROGRAMAR', 'DIFUMINAR', 'BORRAR', 'LISTA', 'JSON'].every((t) => INSTRUCCIONES_JEV.includes(t)));
+const { leerClasificacion, PREGUNTAS_JEV, JEV_SEGURIDAD_MINIMA } = loadSnippet('n8n/clasificador.js', ['leerClasificacion', 'PREGUNTAS_JEV', 'JEV_SEGURIDAD_MINIMA']);
+// Respuesta de JEV (POST /v1/systemone) armada como la documenta el servicio.
+const jevResp = ({ tipo = 'poster', seguridad = 0.95, sinLogo = 0.02, accion = 'otra', imagen = 'ninguna' } = {}) => ({
+  model: 'jev-latest',
+  answers: {
+    tipo: { type: 'choice', choice: tipo, probabilities: { [tipo]: seguridad }, confidence: seguridad },
+    sin_logo: { type: 'noul', noul: sinLogo },
+    accion: { type: 'choice', choice: accion, probabilities: { [accion]: 0.9 }, confidence: 0.9 },
+    imagen: { type: 'choice', choice: imagen, probabilities: { [imagen]: 0.9 }, confidence: 0.9 },
+  },
+  usage: { input_tokens: 412, output_tokens: 18 },
+});
+check('póster con logo', J(leerClasificacion(jevResp())) === J({ tipo: 'poster', logo: true, comando: '' }));
+check('póster sin logo: solo si JEV está seguro', leerClasificacion(jevResp({ sinLogo: 0.93 })).logo === false && leerClasificacion(jevResp({ sinLogo: 0.6 })).logo === false && leerClasificacion(jevResp({ sinLogo: 0.59 })).logo === true);
+check('sin la pregunta del logo (o con un valor raro) lleva logo', [undefined, null, {}, { noul: 'si' }, { noul: null }].every((v) => { const r = jevResp(); r.answers.sin_logo = v; return leerClasificacion(r).logo === true; }));
+check('spam', J(leerClasificacion(jevResp({ tipo: 'spam' }))) === J({ tipo: 'spam', logo: true, comando: '' }));
+check('spam o comando con poca seguridad se tratan como póster', leerClasificacion(jevResp({ tipo: 'spam', seguridad: 0.55 })).tipo === 'poster' && leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).tipo === 'poster' && leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).comando === '' && JEV_SEGURIDAD_MINIMA === 0.6);
+check('sin el dato de seguridad se le cree', (() => { const r = jevResp({ tipo: 'spam' }); delete r.answers.tipo.confidence; return leerClasificacion(r).tipo === 'spam'; })());
+const orden = (accion, imagen) => leerClasificacion(jevResp({ tipo: 'comando', accion, imagen })).comando;
+check('comandos con número de imagen', orden('suspender', 'imagen_2') === 'SUSPENDER 2' && orden('activar', 'imagen_12') === 'ACTIVAR 12' && orden('borrar', 'imagen_4') === 'BORRAR 4' && orden('difuminar', 'imagen_3') === 'DIFUMINAR 3 SI' && orden('quitar_difuminado', 'imagen_3') === 'DIFUMINAR 3 NO');
+check('comandos sin número', orden('lista', 'ninguna') === 'LISTA' && orden('ayuda', 'imagen_3') === 'AYUDA');
+check('una orden que necesita imagen y no la trae, o que JEV no puede armar -> comando vacío', orden('suspender', 'ninguna') === '' && orden('borrar', 'imagen_x') === '' && orden('otra', 'imagen_3') === '' && orden('inventada', 'imagen_3') === '' && leerClasificacion(jevResp({ tipo: 'comando' })).tipo === 'comando');
+check('los comandos que arma JEV los entiende el intérprete de siempre', (() => {
+  const { interpretarComando: ic } = loadSnippet('n8n/comandos.js', ['interpretarComando']);
+  return [['suspender', 'suspend'], ['activar', 'resume'], ['borrar', 'delete'], ['difuminar', 'blur'], ['quitar_difuminado', 'blur']].every(([a, accion]) => { const c = ic(orden(a, 'imagen_7'), { anio: 2026, mes: 10, dia: 9 }); return c && c.ruta === 'comando' && c.accion === accion && c.index === 7; })
+    && ic(orden('lista', 'ninguna')).accion === 'list' && ic(orden('ayuda', 'ninguna')).ruta === 'ayuda' && JSON.parse(ic(orden('quitar_difuminado', 'imagen_7')).bodyToSign).blur === false;
+})());
+check('acepta la respuesta como texto JSON', leerClasificacion(JSON.stringify(jevResp({ tipo: 'spam' }))).tipo === 'spam');
+check('error, respuesta vacía u otra forma -> null (el flujo sigue como antes)', [{ error: { message: 'timeout' } }, {}, { answers: {} }, { answers: { tipo: { choice: 'venta' } } }, { answers: { tipo: 'spam' } }, { answers: null }, '{"answers":', 'no se', '', [], 42, null, undefined].every((v) => leerClasificacion(v) === null));
+check('las preguntas de fábrica: cuatro, con los nombres y opciones que lee el código', J(Object.keys(PREGUNTAS_JEV)) === J(['tipo', 'sin_logo', 'accion', 'imagen']) && J(Object.keys(PREGUNTAS_JEV.tipo.criteria).sort()) === J(['comando', 'poster', 'spam']) && PREGUNTAS_JEV.sin_logo.type === 'noul' && ['lista', 'ayuda', 'borrar', 'suspender', 'activar', 'difuminar', 'quitar_difuminado', 'otra'].every((k) => k in PREGUNTAS_JEV.accion.criteria) && 'ninguna' in PREGUNTAS_JEV.imagen.criteria && 'imagen_12' in PREGUNTAS_JEV.imagen.criteria);
+check('las preguntas respetan los límites de la API de JEV', Object.keys(PREGUNTAS_JEV).length <= 8 && Object.values(PREGUNTAS_JEV).every((q) => q.instructions.length <= 1800 && JSON.stringify(q.criteria || {}).length <= 2000 && (q.type !== 'choice' || (Object.keys(q.criteria).length >= 2 && Object.keys(q.criteria).length <= 20))));
 
 console.log('\n== n8n/comandos.js ==');
 const { interpretarComando } = loadSnippet('n8n/comandos.js', ['interpretarComando']);
@@ -279,7 +299,7 @@ if (!existsSync(exportPath)) {
   const node = (n) => out.nodes.find((x) => x.name === n);
   const next = (n) => (out.connections[n]?.main?.[0] || []).map((x) => x.node);
 
-  check('90 nodos y 12 notas', out.nodes.length === 102, out.nodes.length);
+  check('89 nodos y 12 notas', out.nodes.length === 101, out.nodes.length);
   check('nombres de nodo sin repetir', new Set(out.nodes.map((n) => n.name)).size === out.nodes.length);
   check('idempotente', JSON.stringify(patchWorkflow(out, snippets)) === JSON.stringify(out));
   check('no muta la entrada', JSON.stringify(copia) === antes);
@@ -500,13 +520,21 @@ if (!existsSync(exportPath)) {
   const { ordenHermanos, ordenarLienzo, SECCIONES } = await import('./n8n-lienzo.mjs');
   const NOTA = 'n8n-nodes-base.stickyNote';
   const salida = (n, i) => (out.connections[n]?.main?.[i] || []).map((x) => x.node);
-  const jevNode = node('JEV'), modeloJev = node('Modelo de JEV');
-  check('JEV es un nodo AI Agent con sus instrucciones en System Message', jevNode?.type === '@n8n/n8n-nodes-langchain.agent' && jevNode.parameters.promptType === 'define' && jevNode.parameters.options.systemMessage === INSTRUCCIONES_JEV && /Transcribir audio/.test(jevNode.parameters.text) && /text\?\.body/.test(jevNode.parameters.text));
-  check('si JEV falla el flujo sigue (no se detiene)', jevNode?.onError === 'continueRegularOutput');
-  check('Modelo de JEV: OpenRouter, misma credencial que el audio, temperatura 0', modeloJev?.type === '@n8n/n8n-nodes-langchain.lmChatOpenRouter' && modeloJev.parameters.model === 'deepseek/deepseek-v4.1-flash' && modeloJev.parameters.options.temperature === 0 && J(modeloJev.credentials) === J(node('Transcribir audio').credentials)
-    && J(out.connections['Modelo de JEV']) === J({ ai_languageModel: [[{ node: 'JEV', type: 'ai_languageModel', index: 0 }]] }));
-  check('Traer settings -> Hay texto -> (JEV | Detectar ruta)', next('Traer settings').join() === 'Hay texto' && salida('Hay texto', 0).join() === 'JEV' && salida('Hay texto', 1).join() === 'Detectar ruta' && next('JEV').join() === 'Detectar ruta');
-  check('Hay texto y JEV leen el mismo texto (escrito o audio transcrito)', node('Hay texto').parameters.conditions.conditions[0].leftValue === jevNode.parameters.text && node('Hay texto').parameters.conditions.conditions[0].operator.operation === 'notEmpty');
+  const jevNode = node('JEV');
+  const cab = (n) => Object.fromEntries((n?.parameters.headerParameters?.parameters || []).map((h) => [h.name, h.value]));
+  check('JEV es un HTTP Request a jevmodel.org/v1/systemone', jevNode?.type === 'n8n-nodes-base.httpRequest' && jevNode.parameters.method === 'POST' && jevNode.parameters.url === 'https://jevmodel.org/v1/systemone' && jevNode.parameters.specifyBody === 'json' && jevNode.parameters.sendBody === true);
+  check('JEV: la llave va en Authorization: Bearer y el repo no trae ninguna', /^Bearer /.test(cab(jevNode).Authorization || '') && (yaParchado || cab(jevNode).Authorization === 'Bearer PEGA_AQUI_LA_LLAVE_DE_JEV') && !/sk-[0-9a-f]{20,}/.test(readFileSync(join(ROOT, 'scripts/n8n-patch-flujo.mjs'), 'utf8') + snippets.clasificador));
+  // El cuerpo es una plantilla de n8n: JSON con una expresión {{ }} para el mensaje. Se evalúa aquí la expresión a mano.
+  const cuerpoJev = (texto) => JSON.parse(jevNode.parameters.jsonBody.slice(1).replace(/\{\{[\s\S]*?\}\}/, JSON.stringify('Mensaje del cliente: ' + texto)));
+  check('JEV: el cuerpo es JSON válido con el modelo, el mensaje y las preguntas de fábrica', jevNode.parameters.jsonBody[0] === '=' && (jevNode.parameters.jsonBody.match(/\{\{/g) || []).length === 1 && (jevNode.parameters.jsonBody.match(/\}\}/g) || []).length === 1 && cuerpoJev('hola "x"').model === 'jev-latest' && cuerpoJev('hola "x"').state === 'Mensaje del cliente: hola "x"' && (yaParchado || J(cuerpoJev('a').questions) === J(PREGUNTAS_JEV)));
+  check('si JEV falla el flujo sigue (no se detiene) y no espera de más', jevNode?.onError === 'continueRegularOutput' && jevNode.parameters.options.timeout === 15000);
+  check('ya no hay nodo de agente para JEV ni su modelo', !names.includes('Modelo de JEV') && !out.connections['Modelo de JEV'] && !out.nodes.some((n) => /langchain\.(agent|lmChat)/.test(n.type)));
+  check('Traer settings -> Hay texto -> (JEV | Detectar ruta)', next('Traer settings').join() === 'Hay texto' && salida('Hay texto', 0).join() === 'JEV' && salida('Hay texto', 1).join() === 'Detectar ruta' && next('JEV').includes('Detectar ruta'));
+  check('JEV reporta sus tokens: JEV -> Firmar consumo, que corre antes que Detectar ruta', next('JEV').slice().sort().join() === 'Detectar ruta,Firmar consumo' && node('Firmar consumo').position[1] < node('Detectar ruta').position[1]);
+  check('Hay texto y JEV leen el mismo texto (escrito o audio transcrito)', jevNode.parameters.jsonBody.includes(node('Hay texto').parameters.conditions.conditions[0].leftValue.slice(3, -2).trim()) && /Transcribir audio/.test(jevNode.parameters.jsonBody) && node('Hay texto').parameters.conditions.conditions[0].operator.operation === 'notEmpty');
+  j = (await run('Firmar consumo', { token: 'crt_abc', input: jevResp(), executionId: '77', runIndex: 0 }))[0].json;
+  check('Firmar consumo: reporta los tokens de JEV', J(JSON.parse(j.body)) === J({ eventId: '77-jev-0', kind: 'text', model: 'jev-latest', tokens: { input_tokens: 412, output_tokens: 18 } }) && j.signature === ref('crt_abc', j.timestamp + '.' + j.body), j.body);
+  check('Firmar consumo: si JEV falló no reporta nada', (await run('Firmar consumo', { token: 'crt_abc', input: { error: { message: 'timeout' } } })).length === 0);
   check('Detectar ruta -> Es spam -> (Mensaje ignorado | Es foto)', next('Detectar ruta').join() === 'Es spam' && salida('Es spam', 0).join() === 'Mensaje ignorado' && salida('Es spam', 1).join() === 'Es foto' && node('Mensaje ignorado').type === 'n8n-nodes-base.noOp' && !out.connections['Mensaje ignorado']);
   check('Detectar ruta: lleva clasificador.js y comandos.js', code('Detectar ruta').startsWith(snippets.clasificador) && code('Detectar ruta').includes(snippets.comandos) && /leerClasificacion\(/.test(code('Detectar ruta').slice(snippets.clasificador.length)));
 
@@ -515,39 +543,43 @@ if (!existsSync(exportPath)) {
     new AsyncFunction('$', '$input', '$execution', '$runIndex', '$vars', '$now', jsCode)(
       (n) => { if (noEjecutados.includes(n)) throw new Error('Node ' + n + ' has not been executed'); const item = { json: nodes[n] || {} }; return { first: () => item, last: () => item, all: () => [item] }; },
       { first: () => ({ json: input }) }, { id: '1' }, 0, {}, AHORA2);
-  // `jev` = lo que contestó el agente (undefined = no corrió; un objeto {error} = falló).
+  // `jev` = el JSON que devolvió el nodo JEV (undefined = no corrió; { error } = falló).
   const rutaCon = async (flujo, texto, jev) => (await correr(flujo.nodes.find((n) => n.name === 'Detectar ruta').parameters.jsCode, {
-    nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: texto } }] }, 'Traer settings': { data: { googleDriveFolder: 'https://drive.google.com/drive/folders/ABC' } }, JEV: jev === undefined ? {} : (typeof jev === 'string' ? { output: jev } : jev) },
+    nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: texto } }] }, 'Traer settings': { data: { googleDriveFolder: 'https://drive.google.com/drive/folders/ABC' } }, JEV: jev === undefined ? {} : jev },
     noEjecutados: jev === undefined ? ['JEV', 'Transcribir audio'] : ['Transcribir audio'],
   }))[0].json;
 
-  let dj = await rutaCon(out, 'hola buenas tardes', '{"tipo":"spam","logo":true,"comando":""}');
+  let dj = await rutaCon(out, 'hola buenas tardes', jevResp({ tipo: 'spam' }));
   check('JEV dice spam -> ruta spam', dj.ruta === 'spam' && dj.jev === 'spam');
-  dj = await rutaCon(out, 'Hamburguesa doble $89 sin logo', '{"tipo":"poster","logo":false,"comando":""}');
+  dj = await rutaCon(out, 'oferta increible', jevResp({ tipo: 'spam', seguridad: 0.5 }));
+  check('JEV dice spam sin estar seguro -> se hace el póster', dj.ruta === 'poster' && dj.con_logo === true);
+  dj = await rutaCon(out, 'Hamburguesa doble $89 sin logo', jevResp({ sinLogo: 0.97 }));
   check('JEV dice póster sin logo -> póster y con_logo false', dj.ruta === 'poster' && dj.con_logo === false && dj.texto === 'Hamburguesa doble $89 sin logo');
-  dj = await rutaCon(out, 'Pizza 2x1 $199', '{"tipo":"poster","logo":true}');
+  dj = await rutaCon(out, 'Pizza 2x1 $199', jevResp());
   check('JEV dice póster -> póster con logo', dj.ruta === 'poster' && dj.con_logo === true);
-  dj = await rutaCon(out, 'ya no muestres la segunda', '{"tipo":"comando","logo":true,"comando":"SUSPENDER 2"}');
+  dj = await rutaCon(out, 'ya no muestres la segunda', jevResp({ tipo: 'comando', accion: 'suspender', imagen: 'imagen_2' }));
   check('JEV traduce una frase libre a un comando', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2 && dj.bodyToSign === '{"action":"suspend","index":2}');
-  dj = await rutaCon(out, 'quitame la 4', '{"tipo":"comando","comando":"BORRAR 4"}');
+  dj = await rutaCon(out, 'quitame la 4', jevResp({ tipo: 'comando', accion: 'borrar', imagen: 'imagen_4' }));
   check('BORRAR pedido en frase libre sigue pidiendo confirmación (primero la lista)', dj.ruta === 'comando' && dj.accion === 'delete' && dj.index === 4 && dj.bodyToSign === '{"action":"list"}');
-  dj = await rutaCon(out, 'programar la 3 para los fines de semana', '{"tipo":"comando","comando":"PROGRAMAR 3 SABADO DOMINGO"}');
-  check('un comando que a mano no se entendía, con JEV sí', dj.ruta === 'comando' && dj.bodyToSign === '{"action":"schedule","index":3,"schedule":{"days":[0,6],"from":null,"to":null}}', dj.bodyToSign);
-  dj = await rutaCon(out, 'cambia algo del carrusel', '{"tipo":"comando","comando":"HAZ MAGIA"}');
-  check('JEV dice comando pero no se entiende cuál -> ayuda', dj.ruta === 'ayuda');
-  dj = await rutaCon(out, 'Suspender 2', '{"tipo":"spam"}');
+  dj = await rutaCon(out, 'que imagenes tengo?', jevResp({ tipo: 'comando', accion: 'lista' }));
+  check('«¿qué imágenes tengo?» -> LISTA', dj.ruta === 'comando' && dj.accion === 'list');
+  dj = await rutaCon(out, 'que la 3 salga solo los fines de semana', jevResp({ tipo: 'comando', accion: 'otra', imagen: 'imagen_3' }));
+  check('una orden que JEV no puede armar (programar en frase libre) -> ayuda', dj.ruta === 'ayuda');
+  dj = await rutaCon(out, 'programar 3 sabado domingo', jevResp({ tipo: 'comando', accion: 'otra', imagen: 'imagen_3' }));
+  check('PROGRAMAR escrito en su forma normal sigue funcionando con JEV', dj.ruta === 'comando' && dj.bodyToSign === '{"action":"schedule","index":3,"schedule":{"days":[0,6],"from":null,"to":null}}', dj.bodyToSign);
+  dj = await rutaCon(out, 'Suspender 2', jevResp({ tipo: 'spam' }));
   check('un comando escrito tal cual gana aunque JEV diga spam', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2);
-  dj = await rutaCon(out, 'borrar 3', '{"tipo":"comando","comando":"SUSPENDER 9"}');
+  dj = await rutaCon(out, 'borrar 3', jevResp({ tipo: 'comando', accion: 'suspender', imagen: 'imagen_9' }));
   check('un comando escrito tal cual gana aunque JEV entienda otro', dj.accion === 'delete' && dj.index === 3);
-  dj = await rutaCon(out, 'ayuda', '{"tipo":"spam"}');
+  dj = await rutaCon(out, 'ayuda', jevResp({ tipo: 'spam' }));
   check('AYUDA escrita tal cual no se trata como spam', dj.ruta === 'ayuda');
   const sinJev = [];
-  for (const [t, jev] of [['hola', undefined], ['Tacos al pastor 3x50', { error: 'timeout' }], ['Tacos al pastor 3x50', 'no entendi'], ['Tacos 3x50', '{"tipo":"otra cosa"}'], ['lista', undefined]]) {
+  for (const [t, jev] of [['hola', undefined], ['Tacos al pastor 3x50', { error: { message: 'timeout' } }], ['Tacos al pastor 3x50', { message: 'insufficient_credits' }], ['Tacos 3x50', { answers: { tipo: { choice: 'otra cosa' } } }], ['lista', undefined]]) {
     const a = await rutaCon(out, t, jev), b = await rutaCon(out, t, undefined);
     if (a.jev !== '' || a.con_logo !== true || J(a) !== J(b) || a.ruta === 'spam') sinJev.push(t + ' / ' + J(jev));
   }
   check('si JEV no corre, falla o contesta algo raro, todo sigue como antes (póster con logo, comandos exactos)', sinJev.length === 0, sinJev.join(' | '));
-  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', image: { id: 'IMG1', caption: 'tacos', mime_type: 'image/jpeg' } }] }, 'Traer settings': { data: { googleDriveFolder: 'ABC' } }, JEV: { output: '{"tipo":"spam"}' } } }))[0].json;
+  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', image: { id: 'IMG1', caption: 'tacos', mime_type: 'image/jpeg' } }] }, 'Traer settings': { data: { googleDriveFolder: 'ABC' } }, JEV: jevResp({ tipo: 'spam' }) } }))[0].json;
   check('una foto va a Drive diga lo que diga JEV', dj.ruta === 'foto' && dj.fileName === 'tacos.jpg');
 
   // Póster sin logo
@@ -568,7 +600,7 @@ if (!existsSync(exportPath)) {
   const inst = node('Instrucciones del director');
   const campos = Object.fromEntries((inst?.parameters.assignments.assignments || []).map((a) => [a.name, a.value]));
   check('Instrucciones del director: Edit Fields con los tres textos de fábrica, deja pasar lo demás', inst?.type === 'n8n-nodes-base.set' && inst.parameters.includeOtherFields === true && campos.reglas === P.REGLAS_DIRECTOR && campos.con_logo === P.LOGO_CON && campos.sin_logo === P.LOGO_SIN);
-  check('ningún texto editable empieza con "=" ni lleva {{ (n8n lo tomaría por expresión)', [campos.reglas, campos.con_logo, campos.sin_logo, INSTRUCCIONES_JEV].every((t) => typeof t === 'string' && t[0] !== '=' && !t.includes('{{')));
+  check('ningún texto editable empieza con "=" ni lleva {{ (n8n lo tomaría por expresión)', [campos.reglas, campos.con_logo, campos.sin_logo].every((t) => typeof t === 'string' && t[0] !== '=' && !t.includes('{{')));
   check('Init contexto y Ronda tope -> Instrucciones del director -> Armar prompt', ['Init contexto', 'Ronda tope'].every((n) => next(n).includes('Instrucciones del director') && !next(n).includes('Armar prompt')) && next('Instrucciones del director').join() === 'Armar prompt');
   const editado = JSON.parse((await run('Armar prompt', { input: { texto: 'TACOS', reglas: 'REGLAS MIAS [ANCHO]x[ALTO]. [LOGO]', con_logo: 'ESQUINA MIA', sin_logo: 'SIN MIA' }, nodes: { 'Init contexto': ic4k } }))[0].json.body).messages;
   check('Armar prompt usa las instrucciones editadas en el nodo', editado[0].content === 'REGLAS MIAS 2160x3840. ESQUINA MIA' && /TACOS/.test(editado[1].content));
@@ -576,14 +608,21 @@ if (!existsSync(exportPath)) {
   // Lo que el usuario edita en n8n no se pisa al volver a aplicar el script
   const tocado = JSON.parse(JSON.stringify(out));
   const tn = (n) => tocado.nodes.find((x) => x.name === n);
-  tn('JEV').parameters.options.systemMessage = 'MIS INSTRUCCIONES DE JEV';
-  tn('Modelo de JEV').parameters.model = 'otro/modelo';
+  tn('JEV').parameters.jsonBody = tn('JEV').parameters.jsonBody.replace('Que es este mensaje?', 'MI PREGUNTA');
+  tn('JEV').parameters.headerParameters.parameters.find((h) => h.name === 'Authorization').value = 'Bearer llave-de-prueba';
   tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'reglas').value = 'MIS REGLAS';
   tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'sin_logo').value = '';
   const otraVez = patchWorkflow(tocado, snippets);
   const on = (n) => otraVez.nodes.find((x) => x.name === n);
   const oc = Object.fromEntries(on('Instrucciones del director').parameters.assignments.assignments.map((a) => [a.name, a.value]));
-  check('volver a aplicar el script no pisa lo editado en n8n (JEV, su modelo, instrucciones)', on('JEV').parameters.options.systemMessage === 'MIS INSTRUCCIONES DE JEV' && on('Modelo de JEV').parameters.model === 'otro/modelo' && oc.reglas === 'MIS REGLAS' && oc.sin_logo === '' && oc.con_logo === P.LOGO_CON && JSON.stringify(otraVez) === JSON.stringify(tocado));
+  check('volver a aplicar el script no pisa lo editado en n8n (preguntas y llave de JEV, instrucciones)', /MI PREGUNTA/.test(on('JEV').parameters.jsonBody) && cab(on('JEV')).Authorization === 'Bearer llave-de-prueba' && oc.reglas === 'MIS REGLAS' && oc.sin_logo === '' && oc.con_logo === P.LOGO_CON && JSON.stringify(otraVez) === JSON.stringify(tocado));
+  // Un flujo que todavía tiene a JEV como agente (versión anterior) se convierte a HTTP
+  const conAgente = JSON.parse(JSON.stringify(out));
+  Object.assign(conAgente.nodes.find((x) => x.name === 'JEV'), { type: '@n8n/n8n-nodes-langchain.agent', typeVersion: 3.1, parameters: { promptType: 'define', text: 'x', options: { systemMessage: 'viejo' } } });
+  conAgente.nodes.push({ name: 'Modelo de JEV', type: '@n8n/n8n-nodes-langchain.lmChatOpenRouter', typeVersion: 1, position: [0, 0], parameters: { model: 'm' } });
+  conAgente.connections['Modelo de JEV'] = { ai_languageModel: [[{ node: 'JEV', type: 'ai_languageModel', index: 0 }]] };
+  conAgente.connections.JEV = { main: [[{ node: 'Detectar ruta', type: 'main', index: 0 }]] };
+  if (!yaParchado) check('un flujo con JEV como agente se convierte al nodo HTTP', J(patchWorkflow(conAgente, snippets)) === J(out));
 
   // Lienzo
   const sinOrdenar = patchWorkflow(copia, snippets, { lienzo: false });

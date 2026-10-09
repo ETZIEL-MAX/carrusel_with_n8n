@@ -29,10 +29,10 @@ export const SECCIONES = [
   },
   {
     n: 4, titulo: 'JEV: ¿qué quiere el cliente?', color: 4,
-    texto: '**JEV** (agente de IA) lee el mensaje y decide: **spam**, **póster con logo**, **póster sin logo** o **comando**. Sus instrucciones se editan en el nodo `JEV` → *System Message*; el modelo, en `Modelo de JEV`.\n`Detectar ruta` junta todo y reparte: el spam no se contesta; una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
+    texto: '**JEV** (llamada HTTP al modelo de jevmodel.org) lee el mensaje y decide: **spam**, **póster con logo**, **póster sin logo** o **comando**. Sus preguntas se editan en el nodo `JEV` → cuerpo JSON (`questions`); la llave va en la cabecera `Authorization`.\n`Detectar ruta` junta todo y reparte: el spam no se contesta; una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
     nodos: {
-      'Hay texto': [12, 0], JEV: [13, 0], 'Modelo de JEV': [13.3, 1], 'Detectar ruta': [15, 0], 'Es spam': [16, 0],
-      'Mensaje ignorado': [17, -1], 'Es foto': [17, 0], 'Es comando': [18, 0], 'Es ayuda': [19, 0], 'Enviar ayuda': [20, -1],
+      'Hay texto': [12, 0], JEV: [13, 0], 'Detectar ruta': [14, 0], 'Es spam': [15, 0],
+      'Mensaje ignorado': [16, -1], 'Es foto': [16, 0], 'Es comando': [17, 0], 'Es ayuda': [18, 0], 'Enviar ayuda': [19, -1],
     },
   },
   {
@@ -96,7 +96,7 @@ export const SECCIONES = [
   },
   {
     n: 12, titulo: 'Consumo', color: 2,
-    texto: 'Avisa al panel cuántos tokens e imágenes se gastaron (audio, prompt e imagen). **No mover hacia abajo:** tiene que quedar arriba de todo para correr antes que el resto.',
+    texto: 'Avisa al panel cuántos tokens e imágenes se gastaron (JEV, audio, prompt e imagen). **No mover hacia abajo:** tiene que quedar arriba de todo para correr antes que el resto.',
     nodos: { 'Firmar consumo': [10, -3], 'Reportar consumo': [11, -3] },
   },
 ];

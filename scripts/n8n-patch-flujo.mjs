@@ -6,10 +6,10 @@
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
 //   - los comandos del chat (suspender, programar, difuminar...) salen de n8n/comandos.js y n8n/respuestas.js
-//   - JEV (un AI Agent) clasifica el mensaje: spam, póster con o sin logo, o comando (n8n/clasificador.js)
+//   - JEV (una llamada HTTP a jevmodel.org) clasifica el mensaje: spam, póster con o sin logo, o comando (n8n/clasificador.js)
 //   - las instrucciones del que redacta el prompt se editan en el nodo "Instrucciones del director"
 //   - los nodos se acomodan en 12 secciones con su nota (scripts/n8n-lienzo.mjs)
-// Lo que el usuario edita en n8n no se pisa: el System Message de JEV, el nodo "Modelo de JEV" y los
+// Lo que el usuario edita en n8n no se pisa: las preguntas (cuerpo JSON) y la llave del nodo "JEV", y los
 // tres textos de "Instrucciones del director".
 // Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>
 // La salida se importa en el flujo desde el editor de n8n. Aplicarlo dos veces no cambia nada.
@@ -81,7 +81,7 @@ const DETECTAR_COMANDOS = [
   '// 2) Lo que dijo JEV. Si no corrio, fallo o contesto algo raro, `jev` queda en null y todo',
   '//    sigue como si JEV no existiera: poster con logo.',
   'var jev = null;',
-  "try { jev = leerClasificacion($('JEV').first().json.output); } catch (e) {}",
+  "try { jev = leerClasificacion($('JEV').first().json); } catch (e) {}",
   'out.con_logo = true;',
   "out.jev = jev ? jev.tipo : '';",
   "if (jev && !(cmd && cmd.ruta === 'comando')) {",
@@ -100,7 +100,20 @@ const DETECTAR_COMANDOS = [
 ].join('\n');
 
 // Texto del mensaje (escrito o audio transcrito): lo que lee JEV. Una foto no trae texto aqui.
-const TEXTO_MENSAJE = "={{ String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || ($('Transcribir audio').isExecuted ? $('Transcribir audio').first().json.choices?.[0]?.message?.content : '') || '').trim() }}";
+const TEXTO_EXPR = "String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || ($('Transcribir audio').isExecuted ? $('Transcribir audio').first().json.choices?.[0]?.message?.content : '') || '').trim()";
+const TEXTO_MENSAJE = '={{ ' + TEXTO_EXPR + ' }}';
+const JEV_URL = 'https://jevmodel.org/v1/systemone';
+const JEV_SIN_LLAVE = 'Bearer PEGA_AQUI_LA_LLAVE_DE_JEV'; // la llave real solo vive en n8n, nunca en el repo
+// Cuerpo de la peticion a JEV: una plantilla de n8n (JSON con una expresion para el mensaje).
+// Va con sangria para que se pueda editar en n8n y para que nunca queden dos llaves juntas,
+// que n8n tomaria por una expresion.
+const cuerpoJev = (preguntas) => [
+  '={',
+  '  "model": "jev-latest",',
+  `  "state": {{ JSON.stringify('Mensaje del cliente: ' + ${TEXTO_EXPR}) }},`,
+  '  "questions": ' + JSON.stringify(preguntas, null, 2).split('\n').join('\n  '),
+  '}',
+].join('\n');
 const INIT_LOGO = [
   '// Con logo o sin logo: lo decide JEV (sale de "Detectar ruta"). Si no dijo nada, con logo.',
   'var llevaLogo = true;',
@@ -470,12 +483,13 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   get('Armar respuesta').parameters.jsCode = respuestas + '\n\n' + ARMAR_RESPUESTA;
   get('Enviar ayuda').parameters.textBody = AYUDA;
 
-  // 8. JEV: un agente de IA lee el mensaje antes de "Detectar ruta" y dice si es spam, un póster
-  // (con o sin logo) o un comando. Sus instrucciones (System Message) y su modelo son del usuario:
+  // 8. JEV: una llamada HTTP a jevmodel.org clasifica el mensaje antes de "Detectar ruta": spam,
+  // póster (con o sin logo) o comando. Las preguntas (el cuerpo JSON) y la llave son del usuario:
   // se crean con los valores de fábrica y después no se vuelven a tocar.
   const previo = (name) => wf.nodes.find((n) => n.name === name);
-  const { INSTRUCCIONES_JEV } = constantes(snippets.clasificador, ['INSTRUCCIONES_JEV']);
-  const instruccionesJev = previo('JEV')?.parameters?.options?.systemMessage;
+  const { PREGUNTAS_JEV } = constantes(snippets.clasificador, ['PREGUNTAS_JEV']);
+  const jevPrevio = previo('JEV')?.type === 'n8n-nodes-base.httpRequest' ? previo('JEV').parameters : {};
+  const llavePrevia = (jevPrevio.headerParameters?.parameters || []).find((h) => h.name === 'Authorization')?.value;
   addNode(wf.nodes, {
     parameters: condicion('hay-texto-1', TEXTO_MENSAJE, { type: 'string', operation: 'notEmpty', singleValue: true }),
     id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0007',
@@ -487,28 +501,28 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   });
   addNode(wf.nodes, {
     parameters: {
-      promptType: 'define',
-      text: TEXTO_MENSAJE,
-      options: { systemMessage: typeof instruccionesJev === 'string' && instruccionesJev.trim() ? instruccionesJev : INSTRUCCIONES_JEV },
+      method: 'POST',
+      url: JEV_URL,
+      sendHeaders: true,
+      headerParameters: { parameters: [{ name: 'Authorization', value: typeof llavePrevia === 'string' && llavePrevia ? llavePrevia : JEV_SIN_LLAVE }] },
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: typeof jevPrevio.jsonBody === 'string' && jevPrevio.jsonBody ? jevPrevio.jsonBody : cuerpoJev(PREGUNTAS_JEV),
+      options: { timeout: 15000 },
     },
-    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0008',
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0015',
     name: 'JEV',
-    type: '@n8n/n8n-nodes-langchain.agent',
-    typeVersion: 3.1,
+    type: 'n8n-nodes-base.httpRequest',
+    typeVersion: 4.2,
     position: [0, 0],
+    retryOnFail: true,
+    maxTries: 2,
+    waitBetweenTries: 1000,
     onError: 'continueRegularOutput',
-    notes: 'Clasifica el mensaje: spam, poster (con o sin logo) o comando. Sus instrucciones estan en System Message. Si falla, el flujo sigue como si no existiera.',
+    notes: 'Clasifica el mensaje con el modelo JEV (jevmodel.org): spam, poster (con o sin logo) o comando. Las preguntas estan en el cuerpo JSON. Si falla, el flujo sigue como si no existiera.',
   });
-  addNode(wf.nodes, {
-    parameters: previo('Modelo de JEV')?.parameters || { model: OPENROUTER_MODEL, options: { temperature: 0, timeout: 20000, maxRetries: 1 } },
-    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0009',
-    name: 'Modelo de JEV',
-    type: '@n8n/n8n-nodes-langchain.lmChatOpenRouter',
-    typeVersion: 1,
-    position: [0, 0],
-    credentials: previo('Modelo de JEV')?.credentials || JSON.parse(JSON.stringify(audio.credentials)),
-    notes: 'El modelo de OpenRouter que usa JEV. Para cambiarlo, edita el campo Model.',
-  });
+  wf.nodes = wf.nodes.filter((n) => n.name !== 'Modelo de JEV');
+  delete wf.connections['Modelo de JEV'];
   addNode(wf.nodes, {
     parameters: condicion('es-spam-1', '={{ $json.ruta }}', { type: 'string', operation: 'equals' }, 'spam'),
     id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0010',
@@ -530,8 +544,8 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   if (!noEsSpam || !noEsSpam.some((c) => c.node === 'Es foto')) throw new Error('"Detectar ruta" ya no conecta con "Es foto"');
   wf.connections['Traer settings'] = { main: link('Hay texto') };
   wf.connections['Hay texto'] = { main: [link('JEV')[0], link('Detectar ruta')[0]] };
-  wf.connections.JEV = { main: link('Detectar ruta') };
-  wf.connections['Modelo de JEV'] = { ai_languageModel: [[{ node: 'JEV', type: 'ai_languageModel', index: 0 }]] };
+  // JEV también gasta tokens: se reportan igual que los del prompt y el audio.
+  wf.connections.JEV = { main: link('Detectar ruta', 'Firmar consumo') };
   wf.connections['Detectar ruta'] = { main: link('Es spam') };
   wf.connections['Es spam'] = { main: [link('Mensaje ignorado')[0], noEsSpam] };
   delete wf.connections['Mensaje ignorado'];

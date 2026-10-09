@@ -1,33 +1,84 @@
 // JEV: el clasificador de mensajes. Se pega AL INICIO del nodo "Detectar ruta", antes de
 // n8n/comandos.js. Sin import/export.
 //
-// El nodo "JEV" (AI Agent) lee el mensaje y responde un JSON; `leerClasificacion` lo entiende.
-// Las instrucciones se editan en n8n, en el campo "System Message" del nodo JEV: las de abajo
-// son las de fabrica, con las que se crea el nodo.
-var INSTRUCCIONES_JEV = [
-  'Eres JEV, el clasificador de mensajes de un bot de WhatsApp que crea posters publicitarios y los publica en un carrusel de imagenes (pantallas de un negocio). Lees UN mensaje del cliente y decides que es. No conversas ni haces preguntas.',
-  'Responde UNICAMENTE con un objeto JSON valido, sin markdown y sin texto antes ni despues, con estas tres claves:\n{"tipo": "spam" | "poster" | "comando", "logo": true | false, "comando": ""}',
-  'TIPOS:\n- "poster": el mensaje nombra un producto, servicio, promocion, precio o evento que se puede anunciar, o pide un cambio a un poster. Ejemplos: "Tacos al pastor 3x50 solo hoy", "Corte de cabello $120", "Rosca de reyes, aparta la tuya".\n- "comando": el cliente quiere administrar las imagenes que YA estan en el carrusel: verlas, borrar una, suspenderla, volver a mostrarla, programarla, cambiar cuanto dura, difuminar su fondo, o pide ayuda.\n- "spam": todo lo demas. Saludos y charla ("hola", "gracias", "ok", "jaja"), cadenas, publicidad ajena, enlaces sueltos, mensajes sin sentido o que no tienen nada que anunciar ni que ordenar.',
-  'DUDAS: entre "poster" y "spam", si hay un producto o servicio reconocible es "poster". Entre "poster" y "comando", es "comando" solo si habla claramente de una imagen del carrusel (por su numero o posicion); si no, es "poster".',
-  'LOGO: "logo" es false UNICAMENTE si el cliente pide de forma explicita que el poster no lleve logo ("sin logo", "no le pongas el logo", "sin marca"). En cualquier otro caso es true.',
-  'COMANDO: si el tipo es "comando", escribe en "comando" la orden en UNA de estas formas exactas (N es el numero de la imagen; "la primera" es 1, "la segunda" es 2...):\n- LISTA\n- AYUDA\n- BORRAR N\n- SUSPENDER N\n- ACTIVAR N\n- DURACION N S  (S = segundos; ejemplo: DURACION 3 20. Para todas: DURACION TODAS 12)\n- DIFUMINAR N SI  (o DIFUMINAR N NO)\n- PROGRAMAR N seguido de dias y/o fechas: PROGRAMAR 3 VIERNES; PROGRAMAR 3 LUNES A VIERNES; PROGRAMAR 3 SABADO DOMINGO; PROGRAMAR 3 DEL 17 DE OCT AL 23 DE NOV; PROGRAMAR 3 SIEMPRE (quita la programacion)\nSi quiere un comando pero no dice cual imagen, o no queda claro, usa AYUDA. En los otros tipos "comando" va vacio.',
-  'EJEMPLOS:\n"hola buenas tardes" -> {"tipo":"spam","logo":true,"comando":""}\n"Pizza familiar 2x1 martes $199" -> {"tipo":"poster","logo":true,"comando":""}\n"Hamburguesa doble $89 sin logo porfa" -> {"tipo":"poster","logo":false,"comando":""}\n"ya no muestres la segunda" -> {"tipo":"comando","logo":true,"comando":"SUSPENDER 2"}\n"que la 3 salga solo los fines de semana" -> {"tipo":"comando","logo":true,"comando":"PROGRAMAR 3 SABADO DOMINGO"}\n"quitame la 4" -> {"tipo":"comando","logo":true,"comando":"BORRAR 4"}\n"que imagenes tengo?" -> {"tipo":"comando","logo":true,"comando":"LISTA"}'
-].join('\n\n');
-
-// `respuesta` = lo que contesto JEV (texto con un JSON dentro, o el objeto ya leido).
-// Devuelve { tipo: 'spam' | 'poster' | 'comando', logo: true | false, comando: '' } o null si
-// no se entiende: con null el flujo sigue como si JEV no existiera.
-function leerClasificacion(respuesta) {
-  var o = respuesta;
-  if (typeof o === 'string') {
-    var ini = o.indexOf('{'), fin = o.lastIndexOf('}');
-    if (ini === -1 || fin <= ini) { return null; }
-    try { o = JSON.parse(o.slice(ini, fin + 1)); } catch (e) { return null; }
+// El nodo "JEV" (HTTP Request) llama a POST https://jevmodel.org/v1/systemone con el mensaje del
+// cliente (`state`) y unas preguntas (`questions`). JEV no escribe texto: contesta cada pregunta
+// con una opcion (`choice`) o una probabilidad de si/no (`noul`). `leerClasificacion` convierte
+// esa respuesta en lo que usa el flujo.
+//
+// Las preguntas se editan en n8n, en el cuerpo JSON del nodo JEV: las de abajo son las de
+// fabrica, con las que se crea el nodo. Los NOMBRES de las preguntas y de las opciones (tipo,
+// sin_logo, accion, imagen, spam, poster, comando, borrar...) no se cambian: los lee este codigo.
+var PREGUNTAS_JEV = {
+  tipo: {
+    type: 'choice',
+    instructions: 'Un cliente le escribe por WhatsApp a un bot que crea posters publicitarios y los muestra en un carrusel de imagenes (pantallas de un negocio). Que es este mensaje? Si dudas entre poster y spam y hay un producto o servicio reconocible, es poster. Es comando solo si habla claramente de las imagenes del carrusel.',
+    criteria: {
+      poster: 'Nombra un producto, servicio, promocion, precio o evento que se puede anunciar, o pide un cambio a un poster. Ejemplos: "Tacos al pastor 3x50 solo hoy", "Corte de cabello $120".',
+      comando: 'Quiere administrar las imagenes que YA estan en el carrusel: verlas, borrar una, suspenderla, volver a mostrarla, programarla, cambiar cuanto dura, difuminar su fondo, o pide ayuda. Ejemplos: "ya no muestres la segunda", "quitame la 4", "que imagenes tengo?".',
+      spam: 'Todo lo demas: saludos y charla ("hola", "gracias", "ok", "jaja"), cadenas, publicidad ajena, enlaces sueltos, mensajes sin sentido o sin nada que anunciar ni ordenar.'
+    }
+  },
+  sin_logo: {
+    type: 'noul',
+    instructions: 'El cliente pide de forma explicita que el poster NO lleve logo? (por ejemplo: "sin logo", "no le pongas el logo", "sin marca"). Si no lo menciona, la respuesta es no.'
+  },
+  accion: {
+    type: 'choice',
+    instructions: 'Si el mensaje es una orden sobre las imagenes del carrusel, cual es? Si no es una orden, elige otra.',
+    criteria: {
+      lista: 'Ver que imagenes hay en el carrusel',
+      ayuda: 'Pide ayuda o la lista de comandos',
+      borrar: 'Borrar, eliminar o quitar una imagen para siempre',
+      suspender: 'Dejar de mostrar, pausar u ocultar una imagen sin borrarla',
+      activar: 'Volver a mostrar una imagen suspendida',
+      difuminar: 'Poner el fondo difuminado a una imagen',
+      quitar_difuminado: 'Quitar el fondo difuminado (dejarlo negro)',
+      otra: 'Programar dias o fechas, cambiar la duracion, cualquier otra orden, o no es una orden'
+    }
+  },
+  imagen: {
+    type: 'choice',
+    instructions: 'De que imagen del carrusel habla el mensaje? Por su numero o posicion: "la primera" es imagen_1, "la segunda" o "la 2" es imagen_2. Los precios y cantidades de un anuncio no son numeros de imagen.',
+    criteria: {
+      ninguna: 'No menciona ninguna imagen del carrusel',
+      imagen_1: 'Imagen 1 (la primera)', imagen_2: 'Imagen 2 (la segunda)', imagen_3: 'Imagen 3 (la tercera)',
+      imagen_4: 'Imagen 4 (la cuarta)', imagen_5: 'Imagen 5 (la quinta)', imagen_6: 'Imagen 6 (la sexta)',
+      imagen_7: 'Imagen 7', imagen_8: 'Imagen 8', imagen_9: 'Imagen 9', imagen_10: 'Imagen 10',
+      imagen_11: 'Imagen 11', imagen_12: 'Imagen 12'
+    }
   }
-  if (!o || typeof o !== 'object' || Array.isArray(o)) { return null; }
-  var tipo = String(o.tipo === undefined || o.tipo === null ? '' : o.tipo).toLowerCase().replace(/\s/g, '').replace(/ó/g, 'o');
+};
+
+// Que tan seguro tiene que estar JEV (0 a 1) para que se le haga caso. Por debajo de esto un
+// "spam" o un "comando" se trata como poster (mejor un poster de mas que ignorar a un cliente),
+// y el poster lleva logo.
+var JEV_SEGURIDAD_MINIMA = 0.6;
+
+// Ordenes que JEV puede armar completas. Las que llevan datos (PROGRAMAR, DURACION) no:
+// esas solo se entienden escritas en su forma normal (n8n/comandos.js).
+var JEV_ORDENES = { lista: 'LISTA', ayuda: 'AYUDA', borrar: 'BORRAR N', suspender: 'SUSPENDER N', activar: 'ACTIVAR N', difuminar: 'DIFUMINAR N SI', quitar_difuminado: 'DIFUMINAR N NO' };
+
+// `respuesta` = el JSON que contesto JEV: { answers: { tipo, sin_logo, accion, imagen }, usage }.
+// Devuelve { tipo: 'spam' | 'poster' | 'comando', logo: true | false, comando: '' } o null si
+// no se entiende (JEV fallo o contesto otra cosa): con null el flujo sigue como si no existiera.
+// `comando` es la orden en su forma normal ("SUSPENDER 2") o '' si JEV no pudo armarla.
+function leerClasificacion(respuesta) {
+  var r = respuesta;
+  if (typeof r === 'string') { try { r = JSON.parse(r); } catch (e) { return null; } }
+  var a = r && typeof r === 'object' ? r.answers : null;
+  if (!a || typeof a !== 'object' || !a.tipo || typeof a.tipo !== 'object') { return null; }
+  var tipo = a.tipo.choice;
   if (tipo !== 'spam' && tipo !== 'poster' && tipo !== 'comando') { return null; }
-  var l = typeof o.logo === 'string' ? o.logo.toLowerCase().replace(/\s/g, '') : o.logo;
-  var comando = tipo === 'comando' && typeof o.comando === 'string' ? o.comando.replace(/^\s+|\s+$/g, '').slice(0, 200) : '';
-  return { tipo: tipo, logo: !(l === false || l === 'false' || l === 'no'), comando: comando };
+  var seguro = typeof a.tipo.confidence !== 'number' || a.tipo.confidence >= JEV_SEGURIDAD_MINIMA;
+  if (!seguro) { tipo = 'poster'; }
+  var sinLogo = !!a.sin_logo && typeof a.sin_logo.noul === 'number' && a.sin_logo.noul >= JEV_SEGURIDAD_MINIMA;
+  var comando = '';
+  if (tipo === 'comando') {
+    var orden = a.accion && Object.prototype.hasOwnProperty.call(JEV_ORDENES, a.accion.choice) ? JEV_ORDENES[a.accion.choice] : '';
+    var n = a.imagen && typeof a.imagen.choice === 'string' && a.imagen.choice.indexOf('imagen_') === 0 ? parseInt(a.imagen.choice.slice(7), 10) : 0;
+    if (orden.indexOf(' N') === -1) { comando = orden; }
+    else if (n > 0) { comando = orden.replace(' N', ' ' + n); }
+  }
+  return { tipo: tipo, logo: !sinLogo, comando: comando };
 }

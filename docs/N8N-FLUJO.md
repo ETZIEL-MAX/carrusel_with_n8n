@@ -38,29 +38,42 @@ Solo corre si mandaron una nota de voz. El texto transcrito se trata igual que u
 Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la resolución del póster.
 
 ### 4 · JEV: ¿qué quiere el cliente?
-`Hay texto` → `JEV` (+ `Modelo de JEV`) → `Detectar ruta` → `Es spam` → `Es foto` → `Es comando` → `Es ayuda`
+`Hay texto` → `JEV` → `Detectar ruta` → `Es spam` → `Es foto` → `Es comando` → `Es ayuda`
 
 - **`Hay texto`**: si el mensaje trae texto (escrito o audio), lo lee JEV. Una foto sola pasa directo.
-- **`JEV`** es un nodo **AI Agent**. Lee el mensaje y contesta una sola cosa, en JSON:
+- **`JEV`** es un nodo **HTTP Request** que llama al modelo JEV:
+  `POST https://jevmodel.org/v1/systemone`. JEV no conversa ni escribe texto: recibe el mensaje
+  (`state`) y unas preguntas (`questions`), y contesta cada una con una opción o con una
+  probabilidad de sí/no. El flujo le hace cuatro:
 
-  ```json
-  { "tipo": "spam | poster | comando", "logo": true, "comando": "" }
-  ```
+  | Pregunta | Tipo | Qué contesta |
+  |---|---|---|
+  | `tipo` | opción | `poster`, `comando` o `spam` |
+  | `sin_logo` | sí/no | qué tan probable es que pidan el póster sin logo (0 a 1) |
+  | `accion` | opción | qué orden es: `lista`, `ayuda`, `borrar`, `suspender`, `activar`, `difuminar`, `quitar_difuminado` u `otra` |
+  | `imagen` | opción | de cuál imagen habla: `imagen_1` … `imagen_12` o `ninguna` |
 
-  | Lo que decide JEV | Qué pasa |
+  Con eso el flujo decide:
+
+  | Lo que contesta JEV | Qué pasa |
   |---|---|
-  | `spam` (saludos, charla, cadenas, publicidad ajena) | **No se contesta nada.** Termina en `Mensaje ignorado`. |
-  | `poster` con `logo: true` | Se genera el póster y se le pone el logo. |
-  | `poster` con `logo: false` (pidió «sin logo») | Se genera el póster **sin** logo. |
-  | `comando` | JEV escribe la orden en su forma normal (`SUSPENDER 2`) y se ejecuta. |
+  | `tipo: spam` (saludos, charla, cadenas, publicidad ajena) | **No se contesta nada.** Termina en `Mensaje ignorado`. |
+  | `tipo: poster` | Se genera el póster y se le pone el logo. |
+  | `tipo: poster` y `sin_logo` alto | Se genera el póster **sin** logo. |
+  | `tipo: comando` | Con `accion` + `imagen` se arma la orden (`SUSPENDER 2`) y se ejecuta. |
 
-- **`Modelo de JEV`** es el modelo de OpenRouter que usa JEV (cuelga debajo del nodo `JEV`).
 - **`Detectar ruta`** junta todo y decide a dónde va el mensaje. Reglas que conviene saber:
   - Un comando **escrito tal cual** (`LISTA`, `BORRAR 3`) se obedece siempre, diga lo que diga JEV.
-  - Gracias a JEV también se entienden frases libres: «ya no muestres la segunda» → `SUSPENDER 2`.
+  - Gracias a JEV también se entienden frases libres: «ya no muestres la segunda» → `SUSPENDER 2`,
+    «quítame la 4» → `BORRAR 4`, «¿qué imágenes tengo?» → `LISTA`.
+  - **`PROGRAMAR` y `DURACION` solo funcionan escritos en su forma normal** (`PROGRAMAR 3 VIERNES`,
+    `DURACION 3 20`). JEV elige entre opciones, no puede sacar días, fechas ni segundos de una
+    frase; si alguien lo pide en frase libre, el bot contesta con la ayuda.
   - `BORRAR` sigue enseñando la imagen y pidiendo confirmación.
-  - **Si JEV falla** (sin red, el modelo no contesta, contesta algo raro), el flujo sigue como si
-    JEV no existiera: comandos exactos y, lo demás, póster con logo. Nunca deja al cliente colgado.
+  - **JEV tiene que estar seguro** (0.6 o más, de 0 a 1). Un «spam» o «comando» dudoso se trata
+    como póster, y un «sin logo» dudoso lleva logo: es mejor un póster de más que ignorar a un cliente.
+  - **Si JEV falla** (sin red, llave mala, sin saldo), el flujo sigue como si JEV no existiera:
+    comandos exactos y, lo demás, póster con logo. Nunca deja al cliente colgado.
 
 ### 5 · Foto → Drive
 `Tiene carpeta` → `Descargar foto enviada` → `Bajar foto enviada` → `Subir a Drive` → `Foto guardada`
@@ -103,7 +116,7 @@ Le manda el póster al cliente y espera: «PUBLICAR» o lo que quiera cambiar.
 ### 12 · Consumo
 `Firmar consumo` → `Reportar consumo`
 
-Avisa al panel cuántos tokens e imágenes se gastaron. **Esta sección tiene que quedar arriba de
+Avisa al panel cuántos tokens e imágenes se gastaron (JEV, audio, prompt e imagen). **Esta sección tiene que quedar arriba de
 todas las demás** (ver el punto 6).
 
 ---
@@ -115,18 +128,31 @@ Hay dos IAs con instrucciones que puedes editar tú, directo en n8n, sin tocar c
 ### JEV (qué es spam, qué es un comando…)
 
 1. Abre el nodo **`JEV`** (sección 4).
-2. Baja a **Options → System Message**. Ese texto son sus instrucciones.
-3. Edita y guarda. Luego **publica** el flujo.
+2. En **Body → JSON** están las preguntas, dentro de `"questions"`. Cada una tiene:
+   - `instructions`: la pregunta que se le hace a JEV;
+   - `criteria`: las opciones y la descripción de cada una.
+3. Edita los **textos** y guarda. Luego **publica** el flujo.
 
-Ejemplo — para que los mensajes que solo traen un enlace cuenten como spam, agrega una línea en
-la parte de TIPOS:
+Ejemplo — para que los mensajes que solo traen un enlace cuenten como spam, cambia la descripción
+de la opción `spam` de la pregunta `tipo`:
 
+```json
+"spam": "Todo lo demas: saludos y charla, cadenas, publicidad ajena, cualquier mensaje que sea solo un enlace, ..."
 ```
-- "spam": ... También cualquier mensaje que sea solo un enlace.
-```
 
-Lo único que no debes quitar es la forma de la respuesta (el JSON con `tipo`, `logo` y
-`comando`) ni la lista de comandos en su forma exacta: de eso depende `Detectar ruta`.
+Reglas para no romperlo:
+
+- **Cambia las descripciones, no los nombres.** `tipo`, `sin_logo`, `accion`, `imagen` y los
+  nombres de las opciones (`spam`, `poster`, `comando`, `borrar`, `imagen_3`…) los lee el código
+  de `Detectar ruta`.
+- No toques la línea de `"state"`: es la que mete el mensaje del cliente.
+- El cuerpo tiene que seguir siendo JSON válido (comillas dobles, comas entre elementos) y
+  **nunca dos llaves pegadas** (`{{` o `}}`): n8n las tomaría por una fórmula. Por eso cada
+  llave va en su renglón.
+- Límites de JEV: máximo 8 preguntas, 20 opciones por pregunta y 1 800 letras por instrucción.
+
+Qué tan seguro debe estar JEV (0.6) se cambia en el repo: `JEV_SEGURIDAD_MINIMA` en
+`n8n/clasificador.js`.
 
 ### El director (cómo se redacta el prompt del póster)
 
@@ -170,15 +196,29 @@ Además del texto que tú editas, el flujo agrega al final del prompt unas regla
 
 ---
 
-## 3. Cambiar el modelo
+## 3. La llave y el modelo
 
-- **JEV:** abre `Modelo de JEV` (debajo de `JEV`) y cambia el campo **Model** por el
-  identificador del modelo tal como aparece en OpenRouter (por ejemplo `deepseek/deepseek-v4.1-flash`).
-  La credencial es la misma de OpenRouter que usa el resto del flujo.
+### La llave de JEV
+
+El nodo `JEV` manda la llave en la cabecera **`Authorization`**, con la forma `Bearer sk-…`.
+
+1. Abre el nodo `JEV` → **Headers** → `Authorization`.
+2. Cambia `Bearer PEGA_AQUI_LA_LLAVE_DE_JEV` por `Bearer ` seguido de tu llave.
+3. Guarda y publica.
+
+Mejor todavía (así la llave no queda escrita en el flujo ni en sus exportaciones): en n8n crea
+una credencial **Header Auth** con nombre `Authorization` y valor `Bearer sk-…`, y en el nodo
+elige *Authentication → Generic Credential Type → Header Auth*; después borra la cabecera
+escrita a mano.
+
+Las llaves se crean y se cancelan en `https://jevmodel.org/dashboard/`. La llave **no** está en
+el repositorio; solo vive en n8n.
+
+### El modelo
+
+- **JEV:** en el cuerpo JSON del nodo `JEV`, el campo `"model"` (hoy `jev-latest`).
 - **Director:** el modelo está en `scripts/n8n-patch-flujo.mjs` (`OPENROUTER_MODEL`); se cambia
   ahí y se vuelve a aplicar (punto 6).
-
-JEV usa temperatura 0 para que conteste siempre igual ante el mismo mensaje.
 
 ---
 
@@ -193,11 +233,13 @@ Después de publicar, manda estos mensajes desde un número dado de alta:
 | 3 | `Hamburguesa doble $89 sin logo` | Llega un póster **sin** logo; «sin logo» no aparece escrito en la imagen. |
 | 4 | `LISTA` | Contesta la lista de imágenes del carrusel. |
 | 5 | `ya no muestres la 2` | Contesta que la imagen #2 quedó suspendida. Luego `ACTIVAR 2`. |
+| 5b | `que la 2 salga solo los viernes` | Contesta con la **ayuda** (programar solo se entiende como `PROGRAMAR 2 VIERNES`). |
 | 6 | `quítame la 3` | Enseña la imagen #3 y **pide confirmación** antes de borrar. Contesta que no. |
 | 7 | Una nota de voz: «pizza familiar a ciento noventa y nueve» | Llega un póster, igual que con texto. |
 | 8 | Una foto con pie `tacos` | Contesta que la guardó en Drive como `tacos.jpg`. |
 
-Si el 1 contesta algo o el 2 no contesta nada, revisa las instrucciones de JEV (punto 2).
+Si el 1 contesta algo o el 2 no contesta nada, revisa las preguntas de JEV (punto 2).
+Si **todo** sale como póster con logo (también el saludo), JEV está fallando: casi siempre es la llave (punto 3).
 
 ---
 
@@ -208,20 +250,19 @@ salen en verde; el que falló, en rojo.
 
 | Síntoma | Dónde mirar |
 |---|---|
-| No contestó nada | ¿Terminó en `Mensaje ignorado`? Entonces JEV lo tomó por spam: abre `JEV` y mira su salida (`output`). Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. |
-| JEV sale con error | El flujo sigue igual (póster con logo). Revisa en `Modelo de JEV` que el modelo exista en OpenRouter y que la credencial tenga saldo. |
+| No contestó nada | ¿Terminó en `Mensaje ignorado`? Entonces JEV lo tomó por spam: abre `JEV` y mira su salida (`answers.tipo`). Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. |
+| JEV sale con error | El flujo sigue igual (póster con logo). `401` = la llave está mal o falta (punto 3); `402` = sin saldo en jevmodel.org; `422` = el cuerpo JSON quedó mal después de editarlo; `429` = demasiadas llamadas por minuto. |
 | Hizo póster de algo que era un comando | Mira `Detectar ruta` → campo `jev` (lo que entendió JEV) y `ruta`. Ajusta las instrucciones de JEV. |
-| Salió con logo aunque pedí sin logo | `Detectar ruta` → `con_logo` debe ser `false`. Si es `true`, JEV no lo entendió: mira su `output`. |
+| Salió con logo aunque pedí sin logo | `Detectar ruta` → `con_logo` debe ser `false`. Si es `true`, mira en `JEV` el valor de `answers.sin_logo.noul`: tiene que ser 0.6 o más. |
 | «No entendí el mensaje» | El director contestó FALSE: `Redactar prompt` → `Parsear salida`. |
 | Error 401 al firmar | El token de la fila en `whatsapp_numeros` no coincide con el del panel. |
-| El consumo no aparece en el panel | `Firmar consumo` / `Reportar consumo`. Los tokens de JEV **no** se reportan (ver abajo). |
+| El consumo no aparece en el panel | `Firmar consumo` / `Reportar consumo`. |
 
 **Volver a la versión anterior:** en n8n, menú del flujo → **Version history** → elige la versión
 anterior → **Restore** → publica. La versión previa a JEV es la que empieza con `b0b18994`.
 
-**Lo que no se reporta:** los nodos «AI Agent» de n8n no entregan los tokens que gastan, así que
-el gasto de JEV no sale en el panel de consumo. Son pocos tokens por mensaje. El audio, el prompt
-y las imágenes sí se reportan.
+**Consumo de JEV:** cada llamada devuelve los tokens que gastó y se reportan al panel igual que
+los del audio y el prompt (`JEV` → `Firmar consumo`).
 
 ---
 
@@ -231,7 +272,7 @@ El código de los nodos no se escribe a mano en n8n: sale de este repositorio.
 
 | En el repo | Va a parar a |
 |---|---|
-| `n8n/clasificador.js` | `Detectar ruta` (lee la respuesta de JEV) y las instrucciones de fábrica de JEV |
+| `n8n/clasificador.js` | `Detectar ruta` (lee la respuesta de JEV) y las preguntas de fábrica de JEV |
 | `n8n/comandos.js` | `Detectar ruta` (intérprete de comandos) |
 | `n8n/prompt.js` | `Armar prompt` y los textos de fábrica de `Instrucciones del director` |
 | `n8n/formato.js` | Tamaño del póster, zona del logo y reglas fijas de formato |
@@ -240,11 +281,11 @@ El código de los nodos no se escribe a mano en n8n: sale de este repositorio.
 | `scripts/n8n-patch-flujo.mjs` | Arma el flujo completo: nodos, conexiones y notas |
 | `scripts/n8n-lienzo.mjs` | La posición de cada nodo y el texto de las 12 notas |
 
-**Tuyo, no del repo.** El script crea estos tres con los textos de fábrica y **nunca los vuelve a
+**Tuyo, no del repo.** El script crea esto con los textos de fábrica y **nunca los vuelve a
 pisar**, así que lo que edites en n8n se conserva:
 
-- el **System Message** del nodo `JEV`,
-- el nodo **`Modelo de JEV`**,
+- el **cuerpo JSON** del nodo `JEV` (las preguntas y el modelo),
+- la **llave** de JEV (cabecera `Authorization`),
 - los tres textos de **`Instrucciones del director`**.
 
 Todo lo demás (el código de los nodos, las conexiones, las posiciones, las notas) se regenera

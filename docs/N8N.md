@@ -466,8 +466,8 @@ En el flujo lo hacen dos nodos que salen de `Generar Wan` y de `Generar Qwen`:
 - El reporte **nunca detiene el flujo**: si el carrusel responde con error o no
   responde en 10 s, el póster se envía igual. Va arriba de `Fijar foto` en el
   lienzo para que corra antes de esperar la aprobación del cliente.
-- Los tokens de **JEV** (el clasificador, un nodo `AI Agent`) no se reportan: ese tipo de nodo no los expone.
-  El prompt del póster sí se reporta, porque se redacta con una llamada HTTP (`Redactar prompt`).
+- Los tokens de **JEV** (el clasificador, una llamada HTTP a `jevmodel.org`) se reportan como `kind: "text"`
+  con `eventId` `<ejecución>-jev-<n>`, igual que los del prompt (`Redactar prompt`) y el audio.
 
 ## 13b. Tamaño del póster, prompt y consumo de texto
 

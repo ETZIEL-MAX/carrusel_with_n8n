@@ -3,6 +3,7 @@
 //  - "Generar Wan" ({ model, imageUrl, usage }) o "Generar Qwen" (sin model ni usage): una imagen.
 //  - "Redactar prompt" o "Transcribir audio": una respuesta de chat de OpenRouter
 //    ({ model, choices, usage }): tokens de texto.
+//  - "JEV": la respuesta del clasificador ({ model, answers, usage }): tokens de texto.
 // Un evento por llamada: el eventId evita contarla dos veces. Devuelve null si no hay nada
 // que reportar (un texto sin tokens).
 function armarConsumo(gen, executionId, runIndex) {
@@ -10,7 +11,8 @@ function armarConsumo(gen, executionId, runIndex) {
   // Un nodo HTTP en continueRegularOutput (la transcripcion) deja { error } si falla:
   // no hubo consumo que reportar.
   if (g.error) { return null; }
-  if (Array.isArray(g.choices)) { return armarConsumoTexto(g, executionId, runIndex); }
+  if (Array.isArray(g.choices)) { return armarConsumoTexto(g, executionId, runIndex, 'txt'); }
+  if (g.answers && typeof g.answers === 'object') { return armarConsumoTexto(g, executionId, runIndex, 'jev'); }
   var out = {
     eventId: String(executionId) + '-gen-' + String(runIndex),
     kind: 'image',
@@ -29,12 +31,12 @@ function armarConsumo(gen, executionId, runIndex) {
 }
 
 // Texto o audio transcrito: solo cuenta si el proveedor dio tokens.
-function armarConsumoTexto(g, executionId, runIndex) {
+function armarConsumoTexto(g, executionId, runIndex, sufijo) {
   var u = g.usage, campos = ['total_tokens', 'prompt_tokens', 'completion_tokens', 'input_tokens', 'output_tokens'], i;
   if (u && typeof u === 'object') {
     for (i = 0; i < campos.length; i++) {
       if (typeof u[campos[i]] === 'number' && u[campos[i]] > 0) {
-        return { eventId: String(executionId) + '-txt-' + String(runIndex), kind: 'text', model: g.model || 'texto', tokens: u };
+        return { eventId: String(executionId) + '-' + sufijo + '-' + String(runIndex), kind: 'text', model: g.model || 'texto', tokens: u };
       }
     }
   }
