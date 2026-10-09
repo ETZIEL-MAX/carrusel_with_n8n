@@ -49,7 +49,7 @@ function escapeHtml(str) {
       .map((img, i) => `
         <div class="slide" data-index="${i}" data-id="${escapeHtml(img.id)}" role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${images.length}">
           <canvas class="slide__bg" aria-hidden="true"></canvas>
-          <img data-src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" decoding="async" draggable="false" />
+          <img data-src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" data-view="${escapeHtml(img.view || 'auto')}" data-blur="${img.blur === true ? '1' : ''}" decoding="async" draggable="false" />
         </div>`)
       .join('');
 
@@ -93,15 +93,16 @@ function escapeHtml(str) {
     setBlur(img, !close);
   }
 
-  // Cuando la imagen se ve completa y no llena la pantalla, lo que sobra se rellena con una
-  // versión diminuta de la misma imagen, ampliada por CSS y oscurecida, en vez de negro. Sin
+  // Lo que sobra cuando la imagen se ve completa queda en negro, salvo que esa imagen tenga
+  // el difuminado encendido en el panel (`blur`): entonces se rellena con una versión diminuta
+  // de la misma imagen, ampliada por CSS y oscurecida. Sin
   // filter: blur(): en la GPU de una TV un desenfoque a pantalla completa pesa demasiado, y esto
   // cuesta casi nada. Solo mientras la imagen está cargada.
   const BG_SIDE = 64; // lado mayor del dibujo diminuto
   function setBlur(img, on) {
     const bg = img.closest('.slide')?.querySelector('.slide__bg');
     if (!bg || !bg.getContext) return;
-    const show = Boolean(on && img.getAttribute('src') && img.complete && img.naturalWidth > 0);
+    const show = Boolean(on && img.dataset.blur === '1' && img.getAttribute('src') && img.complete && img.naturalWidth > 0);
     if (show && !bg.dataset.drawn) {
       try {
         const nw = img.naturalWidth, nh = img.naturalHeight;
@@ -316,7 +317,7 @@ function escapeHtml(str) {
 
   // Aplica una lista de imágenes; solo reconstruye si de verdad cambió algo.
   function applyList(incoming, seconds) {
-    const signature = JSON.stringify([seconds, incoming.map((i) => [i.id, i.url, i.alt, i.order, i.view, i.duration])]);
+    const signature = JSON.stringify([seconds, incoming.map((i) => [i.id, i.url, i.alt, i.order, i.view, i.duration, i.blur === true])]);
     if (signature === refresh._sig) return;
     refresh._sig = signature;
     slideDuration = Number(seconds) > 0 ? Number(seconds) : DEFAULT_SECONDS;

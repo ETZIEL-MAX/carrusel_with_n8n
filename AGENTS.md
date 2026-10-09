@@ -89,6 +89,12 @@ registers files uploaded before the quota existed.
 (UTC). Estimated cost = images without provider tokens × `imagePriceUsd`
 (`carousel:config`, default 0.06).
 
+**Visibility.** Each image may carry `suspended` (hidden, not deleted), `schedule`
+(`{ days: [0-6], from, to }`, weekdays and/or an inclusive date range) and `blur` (fill the
+letterbox with a blurred copy; default off = black). `isVisibleAt` in `_utils.js` is the single
+rule; `GET /api/carrusel` filters with it in `CAROUSEL_TIMEZONE` (default `America/Monterrey`),
+while the panel's `GET /api/images` returns everything plus `visibleNow`.
+
 **Whose carousel.** Cookie handlers get the target carousel from `resolveUserId`:
 a user's comes from the session and a different `?userId` is a 403; the super-admin
 must pass `?userId`.

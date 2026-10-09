@@ -421,6 +421,7 @@ async function runTests() {
     const hoy = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: TZ }).format(new Date()));
     r = await patch({ id: img.id, schedule: { days: [(hoy + 1) % 7] } });
     check('programada para otro día -> hoy no sale', r.status === 200 && (await publicImages()).length === total - 1, r.status);
+    check('  el panel recibe visibleNow: false para esa y true para las demás', (await adminImages()).find((i) => i.id === img.id)?.visibleNow === false && (await adminImages()).filter((i) => i.visibleNow === true).length === total - 1);
     r = await patch({ id: img.id, schedule: { days: [hoy, (hoy + 3) % 7] } });
     saved = (await r.json()).data;
     check('programada para hoy -> sale, y los días se guardan ordenados', (await publicImages()).length === total && J(saved?.schedule?.days) === J([hoy, (hoy + 3) % 7].sort((a, b) => a - b)), J(saved?.schedule));

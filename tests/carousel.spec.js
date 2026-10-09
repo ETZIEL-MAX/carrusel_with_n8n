@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { uploadPoster, setCarousel, watchPage } from './helpers.js';
+import { uploadPoster, setCarousel, apiLogin, watchPage } from './helpers.js';
 
 // Tres pósters: horizontal, vertical y uno horizontal marcado "Girar 90°".
 let IMAGES = [];
@@ -16,7 +16,12 @@ test.beforeAll(async ({ playwright }, testInfo) => {
     { url: r, alt: 'girada', order: 2, view: 'rotate' },
     { url: q, alt: 'cuadrado', order: 3 },
   ];
-  await setCarousel(api, 'USER1', IMAGES);
+  const saved = await setCarousel(api, 'USER1', IMAGES);
+  // El difuminado es por imagen y viene apagado: solo se le enciende a la cuadrada (la 4.ª).
+  await apiLogin(api);
+  const cuadrada = saved.data.images.find((i) => i.url === q);
+  const res = await api.patch('/api/images?userId=USER1', { data: { id: cuadrada.id, blur: true } });
+  if (!res.ok()) throw new Error(`blur ${res.status()} ${await res.text()}`);
   await api.dispose();
 });
 
@@ -87,7 +92,9 @@ test('cada imagen se ajusta según su orientación y la de la pantalla', async (
       const px = el.getContext ? el.getContext('2d').getImageData(Math.floor(el.width / 2), Math.floor(el.height / 2), 1, 1).data : [0, 0, 0, 0];
       return { tag: el.tagName, on: el.classList.contains('is-on'), filter: getComputedStyle(el).filter, ancho: el.width, alfa: px[3] };
     });
-    if (expected[i] === 'fit-contain') {
+    // Solo la cuadrada (índice 3) tiene el difuminado encendido: una imagen que se ve completa
+    // pero no lo tiene marcado deja lo que sobra en negro.
+    if (expected[i] === 'fit-contain' && i === 3) {
       expect(fondo.tag).toBe('CANVAS');
       expect(fondo.on).toBe(true);
       expect(fondo.alfa).toBe(255); // se dibujó

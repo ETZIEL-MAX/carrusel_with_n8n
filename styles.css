@@ -828,6 +828,79 @@ a.btn {
   color: var(--accent);
 }
 
+/* Estado de la imagen: suspendida, programada, difuminado */
+.image-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
+}
+
+.image-card__tags .tag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-dim, inherit);
+}
+
+.image-card__tags .tag--off {
+  border-color: var(--danger, #ef4444);
+  color: var(--danger, #ef4444);
+}
+
+.image-card.is-suspended .image-card__thumb,
+.image-card.is-suspended .image-card__previews {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+.date-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.date-range__item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 100%;
+}
+
+.date-range label {
+  margin: 0;
+  flex: 0 0 3.4rem;
+}
+
+.date-range input[type="date"] {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.field label.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0 0 0.5rem;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.field label.check input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  margin-top: 0.15rem;
+  accent-color: var(--accent);
+}
+
 /* Drag handle (only for draggable image cards, not user cards) */
 .image-card[draggable="true"]::before {
   content: "";

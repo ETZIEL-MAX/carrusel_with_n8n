@@ -1,5 +1,5 @@
 import { 
-  getImages, addImage, updateImage, deleteImage, reorderImages,
+  getImages, addImage, updateImage, deleteImage, reorderImages, isVisibleAt,
   validateImageData, validateImagePatch,
   requireSession, checkRateLimit, getClientIp, resolveUserId,
   errorResponse, successResponse,
@@ -29,7 +29,9 @@ export async function GET(request) {
   }
   
   try {
-    const images = await getImages(userId);
+    // `visibleNow`: si hoy sale en el carrusel (ni suspendida ni fuera de su programación).
+    const now = new Date();
+    const images = (await getImages(userId)).map((img) => ({ ...img, visibleNow: isVisibleAt(img, now) }));
     return successResponse({ images }, 'Images retrieved');
   } catch (err) {
     console.error('GET /api/images error:', err);

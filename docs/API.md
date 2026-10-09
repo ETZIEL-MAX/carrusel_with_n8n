@@ -126,6 +126,24 @@ curl -X PATCH https://TU-APP.vercel.app/api/images \
 
 ---
 
+#### Suspender, programar y difuminado
+
+`PATCH /api/images` (y `POST`) aceptan además, por imagen:
+
+| Campo | Valor | Qué hace |
+|---|---|---|
+| `suspended` | `true` / `false` | Suspendida: sigue en el panel pero no sale en el carrusel. No se borra. |
+| `schedule` | `{ "days": [5], "from": "2026-10-17", "to": "2026-11-23" }` o `null` | Cuándo se muestra. `days`: 0 = domingo … 6 = sábado. `from`/`to`: fechas `AAAA-MM-DD`, las dos incluidas. Cualquiera de los tres puede ir en `null`; si van días y fechas, se tienen que cumplir los dos. `null` = siempre. |
+| `blur` | `true` / `false` | Si la imagen no llena la pantalla, lo que sobra se rellena con ella misma difuminada. Por defecto `false`: queda en negro. |
+
+Valores inválidos (día fuera de 0–6 o repetido, fecha que no existe, `from` posterior a `to`) → `400`.
+
+`GET /api/carrusel` (público) **solo entrega lo que toca mostrar ahora**: ni suspendidas ni fuera de su
+programación. El día y la fecha se cuentan en `CAROUSEL_TIMEZONE` (por defecto `America/Monterrey`).
+`GET /api/images` (panel) entrega todas, con `visibleNow` (`true`/`false`) en cada una.
+Un reemplazo por webhook (`mode: "replace"`) conserva estos tres campos de la imagen que ya estaba
+(mismo `id` o misma URL).
+
 ### `DELETE /api/images?id=<id>`
 
 Admin. Elimina una imagen.

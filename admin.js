@@ -105,6 +105,12 @@
   const imgAlt = document.getElementById('imgAlt');
   const imgDuration = document.getElementById('imgDuration');
   const imgFormError = document.getElementById('imgFormError');
+  const imgDaysSeg = document.getElementById('imgDaysSeg');
+  const imgFrom = document.getElementById('imgFrom');
+  const imgTo = document.getElementById('imgTo');
+  const imgScheduleClear = document.getElementById('imgScheduleClear');
+  const imgBlur = document.getElementById('imgBlur');
+  const imgSuspended = document.getElementById('imgSuspended');
   const imgCancelBtn = document.getElementById('imgCancelBtn');
   const imgSaveBtn = document.getElementById('imgSaveBtn');
 
@@ -285,6 +291,39 @@ function escapeHtml(str) {
       localStorage.setItem(NEWS_KEY, NEWS_ID);
     } catch { return; /* sin storage no se puede recordar: mejor no repetir el aviso */ }
     alert('Nueva actualización: ahora puedes modificar el tiempo de cada imagen.');
+  }
+
+  // ===== Estado de una imagen: suspendida, programada, difuminado =====
+  const DAY_NAMES = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+  const MONTH_NAMES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  // "2026-10-17" -> "17 oct" (con el año si no es el actual)
+  function dayLabel(ymd) {
+    const [y, m, d] = String(ymd).split('-').map(Number);
+    return `${d} ${MONTH_NAMES[m - 1]}${y === new Date().getFullYear() ? '' : ` ${y}`}`;
+  }
+  // Textos cortos de una programación: ["Solo vie", "17 oct – 23 nov"]
+  function scheduleLabels(schedule) {
+    if (!schedule) return [];
+    const out = [];
+    if (Array.isArray(schedule.days) && schedule.days.length) {
+      // De lunes a domingo, como en el formulario
+      const days = schedule.days.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+      out.push(`Solo ${days.map((d) => DAY_NAMES[d]).join(', ')}`);
+    }
+    if (schedule.from && schedule.to) out.push(`${dayLabel(schedule.from)} – ${dayLabel(schedule.to)}`);
+    else if (schedule.from) out.push(`Desde ${dayLabel(schedule.from)}`);
+    else if (schedule.to) out.push(`Hasta ${dayLabel(schedule.to)}`);
+    return out;
+  }
+  function imageTags(img) {
+    const tags = [];
+    if (img.suspended) tags.push(['Suspendida', true]);
+    scheduleLabels(img.schedule).forEach((t) => tags.push([t, false]));
+    // El servidor dice si hoy sale (cuenta el día en la zona del negocio)
+    if (!img.suspended && img.schedule && img.visibleNow === false) tags.push(['Hoy no se muestra', true]);
+    if (img.blur) tags.push(['Difuminado', false]);
+    if (!tags.length) return '';
+    return `<div class="image-card__tags">${tags.map(([t, off]) => `<span class="tag${off ? ' tag--off' : ''}">${escapeHtml(t)}</span>`).join('')}</div>`;
   }
 
   function viewLabel(v) {
@@ -1068,7 +1107,7 @@ function escapeHtml(str) {
     userGridEmpty.hidden = true;
     userGrid.innerHTML = userImages
       .map((img, idx) => `
-      <article class="image-card" draggable="true" data-id="${escapeHtml(img.id)}">
+      <article class="image-card${img.suspended ? ' is-suspended' : ''}" draggable="true" data-id="${escapeHtml(img.id)}">
         <a class="image-card__thumb-link" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir en una pestaña nueva">
           <img class="image-card__thumb" src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" draggable="false" />
           <span class="image-card__open">Abrir ↗</span>
@@ -1076,6 +1115,7 @@ function escapeHtml(str) {
         <div class="image-card__body">
           <div class="image-card__alt">${escapeHtml(img.alt || 'Sin título')}</div>
           <a class="image-card__url" href="${escapeHtml(img.url)}" target="_blank" rel="noopener noreferrer" draggable="false" title="Abrir: ${escapeHtml(img.url)}">${escapeHtml(img.url)}</a>
+          ${imageTags(img)}
           <div class="image-card__foot">
             <span class="image-card__order">#${img.order} · ${viewLabel(img.view)}${img.duration ? ` · ${Number(img.duration)} s` : ''}</span>
             <div style="display:flex; gap:.4rem;">
@@ -1084,6 +1124,11 @@ function escapeHtml(str) {
               </button>
               <button class="icon-btn touch-only" data-action="down" data-id="${escapeHtml(img.id)}" aria-label="Mover después" title="Mover después"${idx === userImages.length - 1 ? ' disabled' : ''}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>
+              </button>
+              <button class="icon-btn" data-action="suspend" data-id="${escapeHtml(img.id)}" aria-label="${img.suspended ? 'Reactivar' : 'Suspender'}" title="${img.suspended ? 'Reactivar: volver a mostrarla' : 'Suspender: dejar de mostrarla sin borrarla'}">
+                ${img.suspended
+                  ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 5l12 7-12 7z"/></svg>'
+                  : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 5v14"/><path d="M16 5v14"/></svg>'}
               </button>
               <button class="icon-btn" data-action="edit" data-id="${escapeHtml(img.id)}" aria-label="Editar">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -1141,6 +1186,12 @@ function escapeHtml(str) {
     imgView = (image && image.view) ? image.view : 'auto';
     markSeg(viewSeg, imgView);
     imgDuration.value = (image && image.duration) ? image.duration : '';
+    const schedule = (image && image.schedule) || {};
+    markDays(Array.isArray(schedule.days) ? schedule.days : []);
+    imgFrom.value = schedule.from || '';
+    imgTo.value = schedule.to || '';
+    imgBlur.checked = Boolean(image && image.blur);
+    imgSuspended.checked = Boolean(image && image.suspended);
     imgFormError.textContent = '';
     imgModalBackdrop.classList.add('is-open');
     setTimeout(() => imgUrl.focus(), 60);
@@ -1150,6 +1201,21 @@ function escapeHtml(str) {
     imgModalBackdrop.classList.remove('is-open');
     editingImgId = null;
   }
+
+  // Días de la semana: varios a la vez (0 = domingo … 6 = sábado)
+  function markDays(days) {
+    imgDaysSeg.querySelectorAll('.seg__btn').forEach((b) => b.classList.toggle('is-active', days.includes(Number(b.dataset.day))));
+  }
+  const selectedDays = () => [...imgDaysSeg.querySelectorAll('.seg__btn.is-active')].map((b) => Number(b.dataset.day));
+  imgDaysSeg.addEventListener('click', (e) => {
+    const b = e.target.closest('.seg__btn');
+    if (b) b.classList.toggle('is-active');
+  });
+  imgScheduleClear.addEventListener('click', () => {
+    markDays([]);
+    imgFrom.value = '';
+    imgTo.value = '';
+  });
 
   addImgBtn.addEventListener('click', () => openImgModal());
   imgCancelBtn.addEventListener('click', closeImgModal);
@@ -1167,6 +1233,13 @@ function escapeHtml(str) {
       imgFormError.textContent = err.message;
       return;
     }
+    const days = selectedDays();
+    const from = imgFrom.value || null;
+    const to = imgTo.value || null;
+    if (from && to && to < from) { imgFormError.textContent = '«Hasta» no puede ser anterior a «Desde»'; return; }
+    payload.schedule = (days.length || from || to) ? { days: days.length ? days : null, from, to } : null;
+    payload.blur = imgBlur.checked;
+    payload.suspended = imgSuspended.checked;
     imgSaveBtn.disabled = true; imgSaveBtn.textContent = 'Guardando…';
     try {
       if (editingImgId) {
@@ -1193,6 +1266,13 @@ function escapeHtml(str) {
     const image = userImages.find((i) => i.id === id);
     if (!image) return;
     if (action === 'edit') openImgModal(image);
+    else if (action === 'suspend') {
+      try {
+        await API.updateImage(activeUserId(), id, { suspended: !image.suspended });
+        toast(image.suspended ? 'Imagen reactivada: vuelve a mostrarse' : 'Imagen suspendida: ya no se muestra');
+        await loadUserImages();
+      } catch (err) { toast(err.message, 'error'); }
+    }
     else if (action === 'up') moveImage(id, -1);
     else if (action === 'down') moveImage(id, 1);
     else if (action === 'delete') {

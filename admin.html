@@ -342,6 +342,34 @@
         <input type="number" id="imgDuration" name="imgDuration" min="2" max="3600" step="1" inputmode="numeric" placeholder="Por defecto del carrusel" />
         <p class="hint">Déjalo vacío para usar la duración por defecto del carrusel (Ajustes).</p>
       </div>
+      <div class="field">
+        <label>Cuándo se muestra</label>
+        <div class="seg seg--wrap" id="imgDaysSeg">
+          <button class="seg__btn" type="button" data-day="1">Lun</button>
+          <button class="seg__btn" type="button" data-day="2">Mar</button>
+          <button class="seg__btn" type="button" data-day="3">Mié</button>
+          <button class="seg__btn" type="button" data-day="4">Jue</button>
+          <button class="seg__btn" type="button" data-day="5">Vie</button>
+          <button class="seg__btn" type="button" data-day="6">Sáb</button>
+          <button class="seg__btn" type="button" data-day="0">Dom</button>
+        </div>
+        <div class="date-range">
+          <span class="date-range__item">
+            <label for="imgFrom">Desde</label>
+            <input type="date" id="imgFrom" name="imgFrom" />
+          </span>
+          <span class="date-range__item">
+            <label for="imgTo">Hasta</label>
+            <input type="date" id="imgTo" name="imgTo" />
+          </span>
+          <button class="btn" type="button" id="imgScheduleClear">Siempre</button>
+        </div>
+        <p class="hint">Sin días ni fechas, la imagen se muestra siempre. Se pueden combinar: «viernes» entre dos fechas.</p>
+      </div>
+      <div class="field">
+        <label class="check" for="imgBlur"><input type="checkbox" id="imgBlur" name="imgBlur" /> Rellenar con la imagen difuminada cuando no llene la pantalla (si no, queda en negro)</label>
+        <label class="check" for="imgSuspended"><input type="checkbox" id="imgSuspended" name="imgSuspended" /> Suspendida: no se muestra en el carrusel (no se borra)</label>
+      </div>
       <p class="error-text" id="imgFormError"></p>
       <div class="modal__foot">
         <button class="btn" type="button" id="imgCancelBtn">Cancelar</button>
