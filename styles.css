@@ -266,6 +266,8 @@ body.admin {
 
 .admin-actions {
   display: flex;
+  /* Si no caben en una fila (tablet, ventana angosta) bajan de renglón en vez de salirse. */
+  flex-wrap: wrap;
   gap: 0.7rem;
   align-items: center;
 }
@@ -1093,12 +1095,21 @@ a.btn {
 .modal {
   width: 100%;
   max-width: 460px;
+  /* Nunca más alta que la pantalla: lo que no cabe se recorre dentro de la ventana
+     (antes quedaba cortado y no se podía bajar en una laptop o un celular acostado). */
+  max-height: calc(100vh - 3rem);
+  max-height: calc(100dvh - 3rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 1.9rem;
+  /* Sin relleno abajo: lo pone la franja de botones, que va pegada al borde. */
+  padding: 1.9rem 1.9rem 0;
   display: grid;
   gap: 1.2rem;
+  /* Las filas miden lo que mide su contenido: sin esto, al limitar la altura se encogen. */
+  align-content: start;
   transform: translateY(18px) scale(0.98);
   transition: transform 0.35s var(--ease);
 }
@@ -1113,17 +1124,22 @@ a.btn {
   font-size: 1.5rem;
 }
 
+/* Los botones se quedan pegados abajo mientras se recorre la ventana. */
 .modal__foot {
   display: flex;
   justify-content: flex-end;
   gap: 0.7rem;
-  margin-top: 0.4rem;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0.4rem -1.9rem 0;
+  padding: 0.9rem 1.9rem 1.4rem;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line);
 }
 
 .modal--wide {
   max-width: 640px;
-  max-height: calc(100vh - 3rem);
-  overflow-y: auto;
   /* Sin esto un bloque de código largo ensancha la columna y aparece scroll horizontal. */
   grid-template-columns: minmax(0, 1fr);
 }
