@@ -763,6 +763,12 @@ async function runTests() {
     check('póster 4K se guarda a 3840x2160', big.status === 200 && big.width === 3840 && big.height === 2160 && big.format === 'webp', J(big));
     big = await stored(5000, 2000);
     check('imagen de 5000 px se reduce a 3840 de lado mayor', big.status === 200 && big.width === 3840 && big.height === 1536, J(big));
+    // En un contenedor de 256 MB una foto 4K con el perfil de siempre llega a ~217 MB de pico y dos a la vez lo matan:
+    // por encima de 1920 px se usa un perfil de WebP ligero (~115 MB). Hasta 1920 px no cambia nada.
+    const { webpProfile } = await import('../api/_store.js');
+    check('WebP hasta 1920 px: perfil de siempre', J(webpProfile(1920)) === J({ effort: 4, smartSubsample: true }) && J(webpProfile(1080)) === J({ effort: 4, smartSubsample: true }), J(webpProfile(1920)));
+    check('WebP de más de 1920 px: perfil ligero', J(webpProfile(1921)) === J({ effort: 2, smartSubsample: false }) && J(webpProfile(3840)) === J({ effort: 2, smartSubsample: false }), J(webpProfile(3840)));
+    check('WebP sin medidas -> perfil de siempre', J(webpProfile(undefined)) === J({ effort: 4, smartSubsample: true }) && J(webpProfile(0)) === J({ effort: 4, smartSubsample: true }));
   }
 
   let rb2 = await rawUpload(PNG, { ts: rb.ts, sig: rb.sig });

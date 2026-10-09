@@ -292,6 +292,14 @@ const SHARP_TIMEOUT_SECONDS = 30;
 // Lado mayor máximo de una imagen guardada: cabe un póster 4K (3840x2160); lo que pase se reduce.
 const MAX_IMAGE_SIDE = 3840;
 
+// Perfil de WebP según el lado mayor de la imagen que llega. Hasta 1920 px es el de siempre
+// (smartSubsample cuida los bordes del texto de los pósters). Por encima se usa uno ligero:
+// en el contenedor de 256 MB, convertir una foto 4K con el perfil de siempre llega a ~217 MB de
+// pico y dos a la vez lo matan (OOM); con este, ~115 MB.
+export function webpProfile(longSide) {
+  return longSide > 1920 ? { effort: 2, smartSubsample: false } : { effort: 4, smartSubsample: true };
+}
+
 // Una optimización a la vez: cada una cuesta ~80 MB de RAM nativa (libvips, fuera del heap
 // de Node), y el contenedor tiene 256 MB. Tres fotos en paralelo lo tiran.
 let optimizeQueue = Promise.resolve();
@@ -317,10 +325,12 @@ async function optimizeFile(srcPath, kind) {
   const out = `${srcPath}.webp`;
   try {
     // sequentialRead: libvips decodifica por franjas en vez de cargar la foto entera.
-    const info = await sharp(srcPath, { limitInputPixels: 40_000_000, sequentialRead: true })
+    const open = () => sharp(srcPath, { limitInputPixels: 40_000_000, sequentialRead: true });
+    const meta = await open().metadata();
+    const info = await open()
       .rotate()
       .resize({ width: MAX_IMAGE_SIDE, height: MAX_IMAGE_SIDE, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 90, effort: 4, smartSubsample: true })
+      .webp({ quality: 90, ...webpProfile(Math.max(meta.width || 0, meta.height || 0)) })
       .timeout({ seconds: SHARP_TIMEOUT_SECONDS })
       .toFile(out);
     if (info.size >= size) {
@@ -349,10 +359,11 @@ async function optimizeBuffer(buffer, kind) {
   const sharp = await getSharp();
   if (!sharp) return original;
   try {
+    const meta = await sharp(buffer, { limitInputPixels: 40_000_000 }).metadata();
     const out = await sharp(buffer, { limitInputPixels: 40_000_000 })
       .rotate() // respeta la orientación EXIF de fotos de celular
       .resize({ width: MAX_IMAGE_SIDE, height: MAX_IMAGE_SIDE, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 90, effort: 4, smartSubsample: true })
+      .webp({ quality: 90, ...webpProfile(Math.max(meta.width || 0, meta.height || 0)) })
       .timeout({ seconds: SHARP_TIMEOUT_SECONDS })
       .toBuffer();
     if (out.length >= buffer.length) return original;
