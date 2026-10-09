@@ -289,6 +289,8 @@ async function getSharp() {
 // Si sharp se queda trabado con una imagen, corta y se guarda el original: una sola
 // imagen no puede dejar la fila detenida para todas las demás.
 const SHARP_TIMEOUT_SECONDS = 30;
+// Lado mayor máximo de una imagen guardada: cabe un póster 4K (3840x2160); lo que pase se reduce.
+const MAX_IMAGE_SIDE = 3840;
 
 // Una optimización a la vez: cada una cuesta ~80 MB de RAM nativa (libvips, fuera del heap
 // de Node), y el contenedor tiene 256 MB. Tres fotos en paralelo lo tiran.
@@ -317,7 +319,7 @@ async function optimizeFile(srcPath, kind) {
     // sequentialRead: libvips decodifica por franjas en vez de cargar la foto entera.
     const info = await sharp(srcPath, { limitInputPixels: 40_000_000, sequentialRead: true })
       .rotate()
-      .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: MAX_IMAGE_SIDE, height: MAX_IMAGE_SIDE, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 90, effort: 4, smartSubsample: true })
       .timeout({ seconds: SHARP_TIMEOUT_SECONDS })
       .toFile(out);
@@ -333,7 +335,7 @@ async function optimizeFile(srcPath, kind) {
 }
 
 // Recomprime a WebP de alta calidad (q90: el texto de los pósters se ve igual) sin
-// agrandar y con 1920 px como máximo en el lado largo. GIF (puede ser animado) se deja
+// agrandar y con 3840 px (4K) como máximo en el lado largo. GIF (puede ser animado) se deja
 // igual. Si algo falla o no se gana peso, devuelve el original.
 // `kind` = { type, ext } de sniffImageType. Devuelve { buffer, type, ext }.
 // Pasa por la misma fila que optimizeImageFile: nunca dos pipelines de sharp a la vez.
@@ -349,7 +351,7 @@ async function optimizeBuffer(buffer, kind) {
   try {
     const out = await sharp(buffer, { limitInputPixels: 40_000_000 })
       .rotate() // respeta la orientación EXIF de fotos de celular
-      .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: MAX_IMAGE_SIDE, height: MAX_IMAGE_SIDE, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 90, effort: 4, smartSubsample: true })
       .timeout({ seconds: SHARP_TIMEOUT_SECONDS })
       .toBuffer();

@@ -737,6 +737,34 @@ async function runTests() {
   const rawItem = (await r.json()).data;
   r = await fetch(BASE + `/api/images?userId=USER3&id=${rawItem?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
   check('  se puede añadir al carrusel y borrar', r.status === 200 && (await fetch(BASE + rb.json.data.url)).status === 404, r.status);
+  // Pósters grandes (2K / 4K): se guardan a su tamaño y, pasando de 3840 px, se reducen a 3840
+  {
+    const sharp = (await import('sharp')).default;
+    const gradientJpeg = async (w, h) => {
+      const raw = Buffer.alloc(w * h * 3);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        raw[i] = (x * 255 / w) | 0; raw[i + 1] = (y * 255 / h) | 0; raw[i + 2] = ((x + y) * 255 / (w + h)) | 0;
+      }
+      return sharp(raw, { raw: { width: w, height: h, channels: 3 } }).jpeg({ quality: 90 }).toBuffer();
+    };
+    const stored = async (w, h) => {
+      const up = await rawUpload(await gradientJpeg(w, h), { type: 'image/jpeg' });
+      const file = await fetch(BASE + (up.json.data?.url || '/nada'));
+      const meta = file.status === 200 ? await sharp(Buffer.from(await file.arrayBuffer())).metadata() : {};
+      // Se añade al carrusel y se borra: el archivo deja de contar en el espacio de USER3
+      const added = await (await adminJson('/api/images?userId=USER3', 'POST', { url: up.json.data?.url, alt: 'grande' })).json();
+      await fetch(BASE + `/api/images?userId=USER3&id=${added.data?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+      return { status: up.status, error: up.json.error, width: meta.width, height: meta.height, format: meta.format };
+    };
+    let big = await stored(2560, 1440);
+    check('póster 2K se guarda a 2560x1440', big.status === 200 && big.width === 2560 && big.height === 1440, J(big));
+    big = await stored(3840, 2160);
+    check('póster 4K se guarda a 3840x2160', big.status === 200 && big.width === 3840 && big.height === 2160 && big.format === 'webp', J(big));
+    big = await stored(5000, 2000);
+    check('imagen de 5000 px se reduce a 3840 de lado mayor', big.status === 200 && big.width === 3840 && big.height === 1536, J(big));
+  }
+
   let rb2 = await rawUpload(PNG, { ts: rb.ts, sig: rb.sig });
   check('binario: repetir la misma firma -> 401', rb2.status === 401, rb2.status);
   rb2 = await rawUpload(PNG, { sig: '00'.repeat(32) });
