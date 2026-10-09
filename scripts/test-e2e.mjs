@@ -891,6 +891,15 @@ async function runTests() {
   check('n8n: Wan con token crt_', nr.status === 200 && nr.u.images === 3 && nr.u.tokensTotal === 2480, nr.status + ' ' + J(nr.u));
   nr = await n8nReport('USER3', token2, wanGen, 3, (b) => createHmac('sha256', token2).update(b, 'utf8').digest('hex'));
   check('n8n: token crt_ firmado sin timestamp -> 401', nr.status === 401, nr.status);
+  // Texto (DeepSeek) y audio (Gemini) con la forma exacta de OpenRouter: suman tokens y no cuentan como imagen.
+  const chatGen = { model: 'deepseek/deepseek-v4.1-flash', choices: [{ message: { content: '{}' } }], usage: { prompt_tokens: 1319, completion_tokens: 3800, total_tokens: 5119, cost: 0.001, prompt_tokens_details: { cached_tokens: 0, audio_tokens: 0 } } };
+  const audioGen = { model: 'google/gemini-3.5-flash-lite', choices: [{ message: { content: 'hola' } }], usage: { prompt_tokens: 249, completion_tokens: 14, total_tokens: 263, cost: 0.0001, prompt_tokens_details: { audio_tokens: 213 } } };
+  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  const u0 = (await r.json()).data?.usage || {};
+  nr = await n8nReport('USER3', token2, chatGen, 4);
+  check('n8n: el texto de DeepSeek suma sus tokens y no cuenta como imagen', nr.status === 200 && nr.u.tokensTotal === u0.tokensTotal + 5119 && nr.u.tokensIn === u0.tokensIn + 1319 && nr.u.tokensOut === u0.tokensOut + 3800 && nr.u.images === u0.images, nr.status + ' ' + J(nr.u));
+  nr = await n8nReport('USER3', token2, audioGen, 5);
+  check('n8n: el audio transcrito suma sus tokens', nr.status === 200 && nr.u.tokensTotal === u0.tokensTotal + 5119 + 263 && nr.u.images === u0.images, nr.status + ' ' + J(nr.u));
 
   r = await adminJson('/api/usage', 'PATCH', { imagePriceUsd: 0.1 });
   check('super-admin cambia el precio por imagen', r.status === 200 && (await r.json()).data?.imagePriceUsd === 0.1, r.status);

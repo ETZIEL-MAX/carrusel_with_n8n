@@ -65,6 +65,62 @@ for (const usage of [{}, null, { total_tokens: 0, input_tokens: 0 }, { image_cou
 check('solo output_tokens también cuenta', armarConsumo({ usage: { output_tokens: 5 } }, '1', 0).tokens?.output_tokens === 5);
 check('entrada vacía no rompe', armarConsumo(undefined, '1', 0).kind === 'image');
 
+const J = JSON.stringify;
+check('texto (chat de OpenRouter): sus tokens', (() => {
+  const chat = { id: 'gen-1', model: 'deepseek/deepseek-v4.1-flash', choices: [{ message: { content: '{}' } }], usage: { prompt_tokens: 1319, completion_tokens: 3800, total_tokens: 5119, cost: 0.001 } };
+  return J(armarConsumo(chat, '77', 3)) === J({ eventId: '77-txt-3', kind: 'text', model: 'deepseek/deepseek-v4.1-flash', tokens: chat.usage });
+})());
+check('audio (transcripción): también kind text', (() => {
+  const t = armarConsumo({ model: 'google/gemini-3.5-flash-lite', choices: [{ message: { content: 'hola' } }], usage: { prompt_tokens: 249, completion_tokens: 14, total_tokens: 263 } }, '77', 0);
+  return t.kind === 'text' && t.model === 'google/gemini-3.5-flash-lite' && t.tokens.total_tokens === 263;
+})());
+check('texto sin usage -> no se reporta', armarConsumo({ choices: [{ message: { content: 'FALSE' } }] }, '77', 0) === null);
+check('texto con tokens en cero -> no se reporta', armarConsumo({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }, '77', 0) === null);
+check('la imagen sigue igual', armarConsumo({ model: 'wan2.7-image-pro', usage: {} }, '77', 1).eventId === '77-gen-1');
+
+console.log('\n== n8n/formato.js ==');
+const loadAll = (paths, names) => new Function(paths.map((p) => readFileSync(join(ROOT, p), 'utf8')).join('\n') + '\n; return {' + names.join(',') + '};')();
+const { tamanoPoster, zonaLogo, posicionLogo, tamanoGeneracion, reglasLayout } = loadSnippet('n8n/formato.js', ['tamanoPoster', 'zonaLogo', 'posicionLogo', 'tamanoGeneracion', 'reglasLayout']);
+check('tamanoPoster usa el tamaño que manda el servidor', J(tamanoPoster({ posterWidth: 3840, posterHeight: 2160, defaultOrientation: 'horizontal' })) === J({ formato: 'horizontal', ancho: 3840, alto: 2160, texto: 'horizontal 16:9' }), J(tamanoPoster({ posterWidth: 3840, posterHeight: 2160, defaultOrientation: 'horizontal' })));
+check('tamanoPoster: vertical 3:4 con tamaño del servidor', J(tamanoPoster({ posterWidth: 1080, posterHeight: 1440, defaultOrientation: 'vertical34' })) === J({ formato: 'vertical34', ancho: 1080, alto: 1440, texto: 'vertical 3:4' }));
+const fullhd = { horizontal: [1920, 1080], vertical: [1080, 1920], cuadrado: [1080, 1080], horizontal43: [1440, 1080], vertical34: [1080, 1440] };
+for (const [fmt, [an, al]] of Object.entries(fullhd)) {
+  const r = tamanoPoster({ defaultOrientation: fmt });
+  check('tamanoPoster sin tamaño del servidor (' + fmt + ') -> Full HD de siempre', r.ancho === an && r.alto === al && r.formato === fmt, J(r));
+}
+check('tamanoPoster sin nada -> horizontal Full HD', J(tamanoPoster({})) === J({ formato: 'horizontal', ancho: 1920, alto: 1080, texto: 'horizontal 16:9' }) && tamanoPoster(undefined).ancho === 1920);
+check('tamanoPoster con tamaño absurdo -> Full HD', tamanoPoster({ posterWidth: 99999, posterHeight: 5, defaultOrientation: 'vertical' }).ancho === 1080);
+check('tamanoPoster con tamaño no entero -> Full HD', tamanoPoster({ posterWidth: '3840', posterHeight: 2160.5 }).ancho === 1920);
+check('zonaLogo en 1920x1080 = la de hoy', J(zonaLogo(1920, 1080)) === J({ logoAncho: 420, logoAlto: 224, margen: 50, zonaAnchoPct: 27, zonaAltoPct: 30 }), J(zonaLogo(1920, 1080)));
+check('zonaLogo en 4K duplica el logo', zonaLogo(3840, 2160).logoAncho === 840 && zonaLogo(3840, 2160).logoAlto === 448 && zonaLogo(3840, 2160).margen === 100, J(zonaLogo(3840, 2160)));
+check('zonaLogo en vertical Full HD conserva el tamaño', zonaLogo(1080, 1920).logoAncho === 420 && zonaLogo(1080, 1920).margen === 50);
+check('zonaLogo en HD achica el logo', zonaLogo(1280, 720).logoAncho < 420 && zonaLogo(1280, 720).logoAncho > 200, J(zonaLogo(1280, 720)));
+check('posicionLogo esquina inferior derecha', J(posicionLogo(1920, 1080, 420, 224, 50)) === J({ posX: 1450, posY: 806 }));
+check('posicionLogo nunca negativa si el póster salió chico', J(posicionLogo(300, 200, 420, 224, 50)) === J({ posX: 0, posY: 0 }));
+check('tamanoGeneracion recorta 4K a 2048', J(tamanoGeneracion(3840, 2160, 2048)) === J({ ancho: 2048, alto: 1152 }), J(tamanoGeneracion(3840, 2160, 2048)));
+check('tamanoGeneracion no toca lo que cabe', J(tamanoGeneracion(1080, 1920, 2048)) === J({ ancho: 1080, alto: 1920 }));
+check('tamanoGeneracion vertical 4K: proporción y medidas pares', (() => { const g = tamanoGeneracion(2160, 3840, 2048); return g.alto === 2048 && g.ancho === 1152 && g.ancho % 2 === 0; })());
+const rules = reglasLayout(1920, 1080);
+check('reglas: pide lienzo completo', /FULL BLEED/.test(rules) && /entire right side/.test(rules));
+check('reglas: ya no manda todo a la izquierda', !/on the left or the top/.test(rules) && !/must stay EMPTY/.test(rules));
+check('reglas: zona del logo con sus porcentajes', /27 percent of the width and 30 percent of the height/.test(rules), rules.slice(-300));
+check('reglas: conservan formato y ajuste de textos', /EXACTLY 1920x1080 pixels/.test(rules) && /TEXT FIT/.test(rules) && /HORIZONTAL \(landscape\)/.test(rules));
+check('reglas: vertical y cuadrado', /VERTICAL \(portrait\)/.test(reglasLayout(1080, 1920)) && /SQUARE/.test(reglasLayout(1080, 1080)));
+
+console.log('\n== n8n/prompt.js ==');
+const { armarMensajes } = loadAll(['n8n/formato.js', 'n8n/prompt.js'], ['armarMensajes']);
+const msgs = armarMensajes({ texto: 'TACOS 3X50', producto: '', ronda: 2, prompt_base: 'OLD PROMPT', colorPalette: ['#ff0000'] }, { ancho: 1080, alto: 1920, formato_texto: 'vertical 9:16, EXACTAMENTE 1080x1920 pixeles' });
+check('mensajes: system + user', msgs.length === 2 && msgs[0].role === 'system' && msgs[1].role === 'user');
+check('system: prohíbe el lado vacío y describe la esquina', /PROHIBIDO dejar una mitad/.test(msgs[0].content) && /esquina INFERIOR DERECHA/.test(msgs[0].content));
+check('system: el logo no lo genera el modelo y su esquina continúa la escena', /NO generes, dibujes ni insinues ningun logo/.test(msgs[0].content) && /MISMO fondo de la escena continua/.test(msgs[0].content));
+check('system: ya no pide la esquina "completamente vacia"', !/COMPLETAMENTE LIMPIA, CLARA, VACIA/.test(msgs[0].content) && !/agrega que siempre cree/.test(msgs[0].content));
+check('system: lleva el formato y el lienzo exactos', /vertical 9:16, EXACTAMENTE 1080x1920 pixeles/.test(msgs[0].content) && /lienzo 1080x1920/.test(msgs[0].content));
+check('system: conserva validez, FALSE y formato JSON', /responde FALSE UNICAMENTE/i.test(msgs[0].content) && /producto \(nombre corto/.test(msgs[0].content) && /prompt_final/.test(msgs[0].content));
+check('system: porcentajes de la zona del logo según el formato', /aproximadamente 48 por ciento del ancho y 17 por ciento del alto/.test(msgs[0].content), (msgs[0].content.match(/aproximadamente \d+ por ciento del ancho y \d+ por ciento del alto/) || [''])[0]);
+check('user: lleva mensaje, ronda, prompt anterior y paleta', ['TACOS 3X50', 'RONDA: 2', 'OLD PROMPT', '#ff0000'].every((t) => msgs[1].content.includes(t)));
+check('user: sin paleta pide una acorde al producto', /PALETA: elige una paleta/.test(armarMensajes({ texto: 'x' }, { ancho: 1920, alto: 1080, formato_texto: 'h' })[1].content));
+check('entrada vacía no rompe', armarMensajes(undefined, undefined).length === 2);
+
 console.log('\n== el export del flujo no sale del equipo ==');
 // n8n/.work/ guarda exports que pueden traer secretos: ni a git ni a la imagen de Docker.
 const ignora = (f) => existsSync(join(ROOT, f)) && readFileSync(join(ROOT, f), 'utf8').split(/\r?\n/).some((l) => /^n8n(\/\.work\/?)?$/.test(l.trim()));
