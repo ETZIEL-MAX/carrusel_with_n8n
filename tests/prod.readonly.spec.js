@@ -9,8 +9,11 @@ test('carrusel público: todas las imágenes cargan completas y sin errores', as
   await expect
     .poll(
       () => page.evaluate(() => {
-        const imgs = [...document.querySelectorAll('.slide img')];
-        return imgs.length > 0 && imgs.every((i) => i.complete && i.naturalWidth > 0 && i.classList.contains('is-loaded'));
+        // Solo están cargadas la diapositiva actual y sus vecinas (ver loadWindow en carousel.js).
+        const imgs = [...document.querySelectorAll('.slide img')].filter((i) => i.getAttribute('src'));
+        const active = document.querySelector('.slide.is-active img');
+        return Boolean(active?.getAttribute('src'))
+          && imgs.every((i) => i.complete && i.naturalWidth > 0 && i.classList.contains('is-loaded'));
       }),
       { timeout: 45_000 }
     )

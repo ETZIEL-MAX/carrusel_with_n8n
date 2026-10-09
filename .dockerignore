@@ -18,3 +18,4 @@ playwright-report
 test-results
 playwright.config.js
 n8n/.work
+graphify-out
