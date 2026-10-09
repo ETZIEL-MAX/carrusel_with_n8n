@@ -173,7 +173,7 @@ api/usage/[userId].js    POST (HMAC) — n8n reports generation usage
 scripts/migrate-storage.mjs  register pre-quota files (never deletes)
 scripts/server.mjs  standalone local/Docker server
 scripts/test-e2e.mjs  end-to-end test (npm test)
-n8n/firma.js, n8n/consumo.js, n8n/formato.js, n8n/prompt.js  source of the n8n Code-node snippets (signing, usage report for images and text, poster size and logo zone, prompt messages); no import/export
+n8n/firma.js, consumo.js, formato.js, prompt.js, comandos.js, respuestas.js  source of the n8n Code-node snippets (signing, usage report, poster size and logo zone, prompt messages, chat command parser and replies); no import/export
 scripts/n8n-patch-flujo.mjs  patches an exported n8n workflow JSON with those snippets
 scripts/test-n8n.mjs  tests for the above (npm run test:n8n); n8n/.work/ holds exports (git-ignored, may contain secrets)
 ```

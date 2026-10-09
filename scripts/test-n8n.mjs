@@ -135,6 +135,91 @@ check('user: lleva mensaje, ronda, prompt anterior y paleta', ['TACOS 3X50', 'RO
 check('user: sin paleta pide una acorde al producto', /PALETA: elige una paleta/.test(armarMensajes({ texto: 'x' }, { ancho: 1920, alto: 1080, formato_texto: 'h' })[1].content));
 check('entrada vacía no rompe', armarMensajes(undefined, undefined).length === 2);
 
+console.log('\n== n8n/comandos.js ==');
+const { interpretarComando } = loadSnippet('n8n/comandos.js', ['interpretarComando']);
+const HOY = { anio: 2026, mes: 10, dia: 9 }; // viernes 9 de octubre de 2026
+const cmd = (t, hoy = HOY) => interpretarComando(t, hoy);
+const cuerpo = (t, hoy) => { const c = cmd(t, hoy); return c && c.bodyToSign ? JSON.parse(c.bodyToSign) : null; };
+const prog = (t, hoy) => { const b = cuerpo(t, hoy); return b && b.action === 'schedule' ? b.schedule : undefined; };
+
+// Lo que ya existía no cambia
+check('LISTA', J(cmd('Lista')) === J({ ruta: 'comando', accion: 'list', index: 0, duracion: 0, bodyToSign: '{"action":"list"}' }), J(cmd('Lista')));
+check('AYUDA y COMANDOS', cmd('ayuda').ruta === 'ayuda' && cmd('Comandos').ruta === 'ayuda');
+check('BORRAR 3: primero pide la lista para confirmar', cmd('borrar la imagen 3').accion === 'delete' && cmd('borrar la imagen 3').index === 3 && cmd('borrar la imagen 3').bodyToSign === '{"action":"list"}');
+check('BORRAR sin número -> ayuda', cmd('borrar').ruta === 'ayuda' && cmd('eliminar todo').ruta === 'ayuda');
+check('DURACION 3 20', J(cuerpo('Duración de la 3 20 segundos')) === J({ action: 'duration', index: 3, duration: 20 }) && cmd('duracion 3 20').duracion === 20);
+check('DURACION TODAS 12', J(cuerpo('duracion todas 12')) === J({ action: 'duration', index: 'all', duration: 12 }));
+check('un mensaje normal no es comando (genera póster)', cmd('Tacos al pastor 3x50 solo hoy') === null && cmd('') === null && cmd('quiero programar una promo los viernes') === null);
+check('TIEMPO sin datos no secuestra el mensaje', cmd('tiempo de entrega 30 minutos') === null);
+
+// Suspender / activar
+check('SUSPENDER 3', J(cuerpo('Suspender 3')) === J({ action: 'suspend', index: 3 }) && cmd('suspender 3').accion === 'suspend' && cmd('suspender 3').index === 3);
+check('otras formas de suspender', ['suspende la 3', 'pausar 3', 'pausa la imagen 3', 'ocultar 3'].every((t) => J(cuerpo(t)) === J({ action: 'suspend', index: 3 })));
+check('ACTIVAR 2 y sinónimos', ['activar 2', 'Reactivar la 2', 'mostrar 2', 'activa la imagen 2'].every((t) => J(cuerpo(t)) === J({ action: 'resume', index: 2 })));
+check('SUSPENDER sin número -> ayuda', cmd('suspender').ruta === 'ayuda' && cmd('activar todo').ruta === 'ayuda' && cmd('suspender 0').ruta === 'ayuda');
+
+// Difuminar
+check('DIFUMINAR 3 SI / NO', J(cuerpo('difuminar 3 si')) === J({ action: 'blur', index: 3, blur: true }) && J(cuerpo('Difuminar 3 no')) === J({ action: 'blur', index: 3, blur: false }));
+check('DIFUMINAR 3 a secas enciende; QUITAR lo apaga', cuerpo('difuminar 3').blur === true && cuerpo('difuminado 3 quitar').blur === false && cuerpo('blur 3 sí').blur === true);
+check('DIFUMINAR sin número o con otra cosa -> ayuda', cmd('difuminar').ruta === 'ayuda' && cmd('difuminar 3 tal vez').ruta === 'ayuda');
+
+// Programar: días
+check('PROGRAMAR 3 VIERNES', J(cuerpo('Programar 3 viernes')) === J({ action: 'schedule', index: 3, schedule: { days: [5], from: null, to: null } }), J(cuerpo('Programar 3 viernes')));
+check('varios días, con acentos y abreviados', J(prog('programar 3 lunes, miércoles y sábado').days) === J([1, 3, 6]) && J(prog('programar 3 dom lun').days) === J([0, 1]) && J(prog('programar 3 solo los martes').days) === J([2]));
+check('LUNES A VIERNES es un rango', J(prog('programar 3 de lunes a viernes').days) === J([1, 2, 3, 4, 5]) && J(prog('programar 3 viernes a domingo').days) === J([0, 5, 6]));
+// Programar: fechas
+check('DEL 17 DE OCT AL 23 DE NOVIEMBRE', J(prog('programar 3 del 17 de oct al 23 de noviembre')) === J({ days: null, from: '2026-10-17', to: '2026-11-23' }), J(prog('programar 3 del 17 de oct al 23 de noviembre')));
+check('17/10 23/11 y 17-10 al 23-11', J(prog('programar 3 17/10 23/11')) === J({ days: null, from: '2026-10-17', to: '2026-11-23' }) && J(prog('programar 3 17-10 al 23-11')) === J({ days: null, from: '2026-10-17', to: '2026-11-23' }));
+check('días y fechas juntos', J(prog('programar 3 viernes del 17 oct al 23 nov')) === J({ days: [5], from: '2026-10-17', to: '2026-11-23' }));
+check('«17 mar» es marzo y «mar» solo es martes', prog('programar 3 17 mar 20 mar').from === '2027-03-17' && J(prog('programar 3 mar').days) === J([2]));
+check('rango que cruza el año', J(prog('programar 3 del 15 de dic al 10 de ene')) === J({ days: null, from: '2026-12-15', to: '2027-01-10' }));
+check('si el rango ya pasó este año, es el del año que viene', J(prog('programar 3 17 oct 23 nov', { anio: 2026, mes: 12, dia: 1 })) === J({ days: null, from: '2027-10-17', to: '2027-11-23' }));
+check('un rango que ya empezó sigue siendo de este año', J(prog('programar 3 1 oct 23 nov')) === J({ days: null, from: '2026-10-01', to: '2026-11-23' }));
+check('con año escrito', J(prog('programar 3 17/10/2027 23/11/2027')) === J({ days: null, from: '2027-10-17', to: '2027-11-23' }) && prog('programar 3 del 17 de oct de 2028 al 23 de nov de 2028').to === '2028-11-23');
+check('HASTA y DESDE sueltos', J(prog('programar 3 hasta el 23 de nov')) === J({ days: null, from: null, to: '2026-11-23' }) && J(prog('programar 3 desde el 17 de oct')) === J({ days: null, from: '2026-10-17', to: null }));
+check('una sola fecha = solo ese día', J(prog('programar 3 17 oct')) === J({ days: null, from: '2026-10-17', to: '2026-10-17' }));
+check('PROGRAMAR 3 SIEMPRE quita la programación', J(cuerpo('programar 3 siempre')) === J({ action: 'schedule', index: 3, schedule: null }) && cuerpo('programar 3 todos los dias').schedule === null);
+check('programar mal escrito -> ayuda', ['programar', 'programar 3', 'programar viernes', 'programar 3 31 feb 2 mar', 'programar 3 17 oct 23', 'programar 3 pronto', 'programar 3 40 oct 2 nov', 'programar 3 23 nov 17 oct 5 dic'].every((t) => cmd(t).ruta === 'ayuda'), ['programar 3', 'programar 3 31 feb 2 mar', 'programar 3 17 oct 23'].map((t) => cmd(t).ruta).join());
+check('sin fecha de hoy usa el reloj', prog('programar 3 viernes', undefined) !== undefined && cmd('programar 3 17 oct 23 nov', undefined).ruta === 'comando');
+
+console.log('\n== n8n/respuestas.js ==');
+const { armarRespuesta, textoProgramacion } = loadSnippet('n8n/respuestas.js', ['armarRespuesta', 'textoProgramacion']);
+const WEB = 'https://carrusel.etziel.com';
+const resp = (c, r) => armarRespuesta(c, r, WEB, 2026);
+const LISTA3 = { success: true, data: { count: 3, slideDuration: 8, images: [
+  { index: 1, id: 'a', url: '/uploads/a.webp', duration: null, effectiveDuration: 8, suspended: false, schedule: null, blur: false, visibleNow: true },
+  { index: 2, id: 'b', url: '/uploads/b.webp', duration: 20, effectiveDuration: 20, suspended: true, schedule: null, blur: true, visibleNow: false },
+  { index: 3, id: 'c', url: 'https://x.test/c.jpg', duration: null, effectiveDuration: 8, suspended: false, schedule: { days: [5], from: '2026-10-17', to: '2026-11-23' }, blur: false, visibleNow: false },
+] } };
+
+check('programación en texto: días', textoProgramacion({ days: [5], from: null, to: null }, 2026) === 'solo vie' && textoProgramacion({ days: [0, 1, 6], from: null, to: null }, 2026) === 'solo lun, sab, dom');
+check('programación en texto: fechas', textoProgramacion({ days: null, from: '2026-10-17', to: '2026-11-23' }, 2026) === '17 oct – 23 nov' && textoProgramacion({ days: null, from: '2026-10-17', to: null }, 2026) === 'desde 17 oct' && textoProgramacion({ days: null, from: null, to: '2026-11-23' }, 2026) === 'hasta 23 nov');
+check('programación en texto: días y fechas, y año si no es el actual', textoProgramacion({ days: [5], from: '2026-12-15', to: '2027-01-10' }, 2026) === 'solo vie · 15 dic – 10 ene 2027' && textoProgramacion(null, 2026) === '' && textoProgramacion({ days: null, from: '2026-10-17', to: '2026-10-17' }, 2026) === 'solo el 17 oct');
+
+let rp = resp({ accion: 'list' }, LISTA3);
+check('LISTA: una imagen normal se ve como antes', rp.texto.includes('#1 · 8 s (por defecto)\n' + WEB + '/uploads/a.webp') && rp.confirmar === false, rp.texto.slice(0, 160));
+check('LISTA: marca la suspendida y el difuminado', rp.texto.includes('#2 · 20 s · SUSPENDIDA · difuminado'), rp.texto);
+check('LISTA: muestra la programación y si hoy no sale', rp.texto.includes('#3 · 8 s (por defecto) · solo vie · 17 oct – 23 nov · hoy no se muestra\nhttps://x.test/c.jpg'), rp.texto);
+check('LISTA: encabezado y recordatorio de comandos', rp.texto.startsWith('Imagenes del carrusel: 3 (por defecto 8 s)') && /SUSPENDER 3/.test(rp.texto) && /AYUDA/.test(rp.texto));
+check('LISTA vacía', resp({ accion: 'list' }, { success: true, data: { count: 0, slideDuration: 8, images: [] } }).texto === 'El carrusel esta vacio.');
+
+rp = resp({ accion: 'delete', index: 2 }, LISTA3);
+check('BORRAR: pide confirmar y borra por id', rp.confirmar === true && rp.index === 2 && rp.bodyToSign === '{"action":"delete","id":"b"}' && rp.fotoUrl === WEB + '/uploads/b.webp' && rp.texto.startsWith('¿Borrar la imagen #2'));
+check('BORRAR una que no existe', /No existe la imagen #9; hay 3/.test(resp({ accion: 'delete', index: 9 }, LISTA3).texto) && resp({ accion: 'delete', index: 9 }, LISTA3).confirmar === false);
+check('BORRAR hecho', resp({ accion: 'delete' }, { success: true, data: { index: 2, count: 2 } }).texto === '🗑️ Borrada la imagen #2. Quedan 2 en el carrusel.');
+check('DURACION', resp({ accion: 'duration' }, { success: true, data: { index: 3, duration: 20 } }).texto === '⏱️ Listo: la imagen #3 ahora dura 20 s.' && resp({ accion: 'duration' }, { success: true, data: { index: 'all', slideDuration: 12 } }).texto === '⏱️ Listo: las imagenes sin duracion propia ahora duran 12 s.');
+check('error del servidor y sin respuesta', resp({ accion: 'list' }, { success: false, error: 'No existe la imagen #9; hay 3 en el carrusel' }).texto === '⚠️ No existe la imagen #9; hay 3 en el carrusel' && /No pude comunicarme/.test(resp({ accion: 'suspend' }, undefined).texto) && /No pude comunicarme/.test(resp({ accion: 'list' }, {}).texto));
+
+check('SUSPENDER', (() => { const t = resp({ accion: 'suspend' }, { success: true, data: { index: 2, suspended: true, visibleNow: false } }).texto; return /#2/.test(t) && /suspendida/i.test(t) && /ACTIVAR 2/.test(t) && /no se borr/i.test(t); })());
+check('ACTIVAR', (() => { const t = resp({ accion: 'resume' }, { success: true, data: { index: 2, suspended: false, visibleNow: true } }).texto; return /#2/.test(t) && /vuelve a mostrarse/.test(t); })());
+check('ACTIVAR una que hoy no toca por su programación lo avisa', /hoy no se muestra/.test(resp({ accion: 'resume' }, { success: true, data: { index: 2, suspended: false, visibleNow: false } }).texto));
+check('PROGRAMAR: repite lo que entendió', (() => { const t = resp({ accion: 'schedule' }, { success: true, data: { index: 3, schedule: { days: [5], from: '2026-10-17', to: '2026-11-23' }, suspended: false, visibleNow: false } }).texto; return /#3/.test(t) && t.includes('solo vie · 17 oct – 23 nov') && /Hoy no se muestra/.test(t) && /PROGRAMAR 3 SIEMPRE/.test(t); })());
+check('PROGRAMAR que sí toca hoy no dice que no se muestra', !/no se muestra/i.test(resp({ accion: 'schedule' }, { success: true, data: { index: 3, schedule: { days: [5], from: null, to: null }, suspended: false, visibleNow: true } }).texto));
+check('PROGRAMAR SIEMPRE', /#3/.test(resp({ accion: 'schedule' }, { success: true, data: { index: 3, schedule: null, suspended: false, visibleNow: true } }).texto) && /se muestra siempre/.test(resp({ accion: 'schedule' }, { success: true, data: { index: 3, schedule: null, suspended: false, visibleNow: true } }).texto));
+check('PROGRAMAR una suspendida avisa que sigue suspendida', /sigue suspendida/.test(resp({ accion: 'schedule' }, { success: true, data: { index: 3, schedule: { days: [5], from: null, to: null }, suspended: true, visibleNow: false } }).texto));
+check('DIFUMINAR', /#1/.test(resp({ accion: 'blur' }, { success: true, data: { index: 1, blur: true } }).texto) && /difuminad/.test(resp({ accion: 'blur' }, { success: true, data: { index: 1, blur: true } }).texto) && /negro/.test(resp({ accion: 'blur' }, { success: true, data: { index: 1, blur: false } }).texto));
+check('una lista larguísima se corta antes del límite de WhatsApp', (() => { const many = { success: true, data: { count: 80, slideDuration: 8, images: Array.from({ length: 80 }, (_, i) => ({ index: i + 1, id: 'x' + i, url: '/uploads/' + 'y'.repeat(60) + i + '.webp', duration: null, effectiveDuration: 8 })) } }; return resp({ accion: 'list' }, many).texto.length <= 3910; })());
+
 console.log('\n== el export del flujo no sale del equipo ==');
 // n8n/.work/ guarda exports que pueden traer secretos: ni a git ni a la imagen de Docker.
 const ignora = (f) => existsSync(join(ROOT, f)) && readFileSync(join(ROOT, f), 'utf8').split(/\r?\n/).some((l) => /^n8n(\/\.work\/?)?$/.test(l.trim()));
@@ -149,7 +234,7 @@ if (!existsSync(exportPath)) {
   console.log('SKIP  no existe ' + exportPath);
 } else {
   const { patchWorkflow } = await import('./n8n-patch-flujo.mjs');
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const copia = JSON.parse(readFileSync(exportPath, 'utf8'));
   const antes = JSON.stringify(copia);
   const out = patchWorkflow(copia, snippets);
@@ -321,6 +406,57 @@ if (!existsSync(exportPath)) {
   check('Armar prompt con la salida real de Init contexto: mensaje, paleta y lienzo', /TACOS 3X50 hoy/.test(deInit[1].content) && /#ff0000/.test(deInit[1].content) && /lienzo 1440x2560/.test(deInit[0].content), deInit[1].content.slice(0, 120));
   const deRonda = JSON.parse((await run('Armar prompt', { input: { ...iniReal, ronda: 2, prompt_base: 'PROMPT VIEJO', producto: 'TACOS' }, nodes: { 'Init contexto': iniReal } }))[0].json.body).messages;
   check('Armar prompt en una ronda siguiente: ronda, prompt anterior y producto', /RONDA: 2/.test(deRonda[1].content) && /PROMPT VIEJO/.test(deRonda[1].content) && /PRODUCTO ACTUAL: TACOS/.test(deRonda[1].content), deRonda[1].content.slice(0, 160));
+
+  // ===== Comandos del chat: suspender, programar y difuminar =====
+  const AHORA = { year: 2026, month: 10, day: 9, toFormat: () => '20261009-120000', setZone() { return this; } };
+  // Ejecuta el código de un nodo (el parchado o el original) con las variables de n8n simuladas.
+  const ejecutar = (jsCode, { input = {}, nodes = {} } = {}) =>
+    new AsyncFunction('$', '$input', '$execution', '$runIndex', '$vars', '$now', jsCode)(
+      (n) => { const item = { json: nodes[n] || {} }; return { first: () => item, last: () => item, all: () => [item] }; },
+      { first: () => ({ json: input }) }, { id: '1' }, 0, {}, AHORA);
+  const detectar = async (flujo, texto) => (await ejecutar(flujo.nodes.find((n) => n.name === 'Detectar ruta').parameters.jsCode,
+    { nodes: { 'WhatsApp Trigger': { messages: [{ from: '5218131395313', text: { body: texto } }] }, 'Traer settings': { data: { googleDriveFolder: 'https://drive.google.com/drive/folders/ABC' } } } }))[0].json;
+  const responder = async (flujo, cmdJson, r) => (await ejecutar(flujo.nodes.find((n) => n.name === 'Armar respuesta').parameters.jsCode, { input: r, nodes: { 'Detectar ruta': cmdJson } }))[0].json;
+
+  check('Detectar ruta: lleva comandos.js y ya no tiene el intérprete escrito a mano', code('Detectar ruta').startsWith(snippets.comandos) && /interpretarComando\(texto, hoy\)/.test(code('Detectar ruta')) && !/var BORRAR = \[/.test(code('Detectar ruta')));
+  check('Armar respuesta: lleva respuestas.js', code('Armar respuesta').startsWith(snippets.respuestas) && /armarRespuesta\(cmd, r, /.test(code('Armar respuesta')));
+  const ayuda = node('Enviar ayuda').parameters.textBody;
+  check('la ayuda enseña los comandos nuevos y conserva los de antes', ['LISTA', 'DURACION 3 20', 'BORRAR 3', 'SUSPENDER 3', 'ACTIVAR 3', 'PROGRAMAR 3 VIERNES', 'PROGRAMAR 3 SIEMPRE', 'DIFUMINAR 3 SI'].every((t) => ayuda.includes(t)) && /Drive/.test(ayuda), ayuda.slice(0, 120));
+
+  let d1 = await detectar(out, 'Suspender la imagen 2');
+  check('Detectar ruta: SUSPENDER 2', d1.ruta === 'comando' && d1.accion === 'suspend' && d1.index === 2 && d1.bodyToSign === '{"action":"suspend","index":2}' && d1.folderId === 'ABC', J(d1).slice(0, 200));
+  d1 = await detectar(out, 'programar 1 viernes del 17 de oct al 23 de nov');
+  check('Detectar ruta: PROGRAMAR con días y fechas (año según $now)', d1.ruta === 'comando' && d1.bodyToSign === '{"action":"schedule","index":1,"schedule":{"days":[5],"from":"2026-10-17","to":"2026-11-23"}}', d1.bodyToSign);
+  d1 = await detectar(out, 'difuminar 3 no');
+  check('Detectar ruta: DIFUMINAR 3 NO', d1.bodyToSign === '{"action":"blur","index":3,"blur":false}');
+  check('Detectar ruta: un comando mal escrito va a la ayuda; un mensaje normal al póster', (await detectar(out, 'programar 3')).ruta === 'ayuda' && (await detectar(out, 'Pausa para el cafe 2x1 solo hoy')).ruta === 'poster');
+
+  let rr = await responder(out, { accion: 'suspend', index: 2 }, { success: true, data: { index: 2, suspended: true, visibleNow: false } });
+  check('Armar respuesta: SUSPENDER', /#2/.test(rr.texto) && /ACTIVAR 2/.test(rr.texto) && rr.confirmar === false);
+  rr = await responder(out, { accion: 'schedule', index: 1 }, { success: true, data: { index: 1, schedule: { days: [5], from: '2026-10-17', to: '2026-11-23' }, suspended: false, visibleNow: false } });
+  check('Armar respuesta: PROGRAMAR (el año actual sale de $now)', rr.texto.includes('solo vie · 17 oct – 23 nov') && !/2026/.test(rr.texto), rr.texto);
+  check('Armar respuesta: entiende la respuesta que llega como texto', (await responder(out, { accion: 'blur' }, JSON.stringify({ success: true, data: { index: 1, blur: true } }))).texto.includes('#1'));
+
+  if (!yaParchado) {
+    // Lo que ya funcionaba tiene que salir idéntico al nodo original (antes del parche).
+    const viejos = ['lista', 'Lista.', 'ayuda', 'comandos', 'borrar 3', 'Borra la imagen 3', 'borrar', 'Duración 3 20', 'duracion de la 3 20 segundos', 'duracion todas 12', 'duracion x', 'tiempo 3 20', 'tiempo de entrega 30 minutos', 'hola', 'Tacos al pastor 3x50', ''];
+    const distintos = [];
+    for (const t of viejos) { if (J(await detectar(copia, t)) !== J(await detectar(out, t))) distintos.push(t); }
+    check('Detectar ruta: ' + viejos.length + ' mensajes de antes dan exactamente lo mismo que el nodo original', distintos.length === 0, distintos.join(' | '));
+    const casos = [
+      [{ accion: 'duration', index: 3 }, { success: true, data: { index: 3, duration: 20 } }],
+      [{ accion: 'duration', index: 'all' }, { success: true, data: { index: 'all', slideDuration: 12, count: 3 } }],
+      [{ accion: 'delete', index: 2 }, { success: true, data: { count: 2, slideDuration: 8, images: [{ index: 1, id: 'a', url: '/uploads/a.webp', duration: null, effectiveDuration: 8 }, { index: 2, id: 'b', url: 'https://x.test/b.jpg', duration: 5, effectiveDuration: 5 }] } }],
+      [{ accion: 'delete', index: 7 }, { success: true, data: { count: 1, slideDuration: 8, images: [{ index: 1, id: 'a', url: '/uploads/a.webp', duration: null, effectiveDuration: 8 }] } }],
+      [{ accion: 'delete', index: 2 }, { success: true, data: { index: 2, count: 1 } }],
+      [{ accion: 'list' }, { success: true, data: { count: 0, slideDuration: 8, images: [] } }],
+      [{ accion: 'list' }, { success: false, error: 'El carrusel USER9 no existe' }],
+      [{ accion: 'list' }, {}],
+    ];
+    const cambia = [];
+    for (const [c, r] of casos) { if (J(await responder(copia, c, r)) !== J(await responder(out, c, r))) cambia.push(J(c)); }
+    check('Armar respuesta: ' + casos.length + ' respuestas de antes dan exactamente lo mismo que el nodo original', cambia.length === 0, cambia.join(' | '));
+  }
 }
 
 console.log(`\n${pass}/${total} pruebas OK`);

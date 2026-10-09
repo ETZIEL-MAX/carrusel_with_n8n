@@ -5,6 +5,7 @@
 //   - el tamaño del póster sale de formato + resolución del panel (n8n/formato.js), el logo escala con él
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
+//   - los comandos del chat (suspender, programar, difuminar...) salen de n8n/comandos.js y n8n/respuestas.js
 // Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>
 // La salida se importa en el flujo desde el editor de n8n. Aplicarlo dos veces no cambia nada.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -62,6 +63,44 @@ const PARSEAR_REGLAS = [
   "  prompt_final += reglasLayout(Number(ctx('ancho', 1920)) || 1920, Number(ctx('alto', 1080)) || 1080);",
   '}',
   '',
+].join('\n');
+
+const ZONA = 'America/Monterrey'; // zona del negocio: decide el año de una fecha sin año
+const DETECTAR_COMANDOS = [
+  '// ---- Comandos de texto fijo (sin IA): ver n8n/comandos.js ----',
+  'var hoy = null;',
+  `try { var ahora = $now.setZone('${ZONA}'); hoy = { anio: ahora.year, mes: ahora.month, dia: ahora.day }; } catch (e) {}`,
+  'var cmd = interpretarComando(texto, hoy);',
+  'if (cmd) { out.ruta = cmd.ruta; out.accion = cmd.accion; out.index = cmd.index; out.duracion = cmd.duracion; out.bodyToSign = cmd.bodyToSign; }',
+  'return [{ json: out }];',
+].join('\n');
+const ARMAR_RESPUESTA = [
+  'var cmd = {};',
+  "try { cmd = $('Detectar ruta').first().json || {}; } catch (e) {}",
+  'var r = {};',
+  'try { r = $input.first().json || {}; } catch (e) {}',
+  "if (typeof r === 'string') { try { r = JSON.parse(r); } catch (e) { r = {}; } }",
+  "if (r && typeof r.data === 'string' && r.success === undefined) { try { r = JSON.parse(r.data); } catch (e) {} }",
+  'var anio;',
+  `try { anio = $now.setZone('${ZONA}').year; } catch (e) {}`,
+  "return [{ json: armarRespuesta(cmd, r, 'https://carrusel.etziel.com', anio) }];",
+].join('\n');
+const AYUDA = [
+  'Comandos del carrusel:',
+  '',
+  '• LISTA — ver las imagenes, su numero y su estado',
+  '• DURACION 3 20 — la imagen #3 dura 20 segundos',
+  '• DURACION TODAS 12 — duracion por defecto de todas',
+  '• SUSPENDER 3 — deja de mostrarla sin borrarla',
+  '• ACTIVAR 3 — vuelve a mostrarla',
+  '• PROGRAMAR 3 VIERNES — solo ese dia (o LUNES A VIERNES)',
+  '• PROGRAMAR 3 DEL 17 DE OCT AL 23 DE NOV — solo entre esas fechas',
+  '• PROGRAMAR 3 SIEMPRE — quita la programacion',
+  '• DIFUMINAR 3 SI / DIFUMINAR 3 NO — fondo difuminado o negro',
+  '• BORRAR 3 — borrar la imagen #3 (pide confirmacion)',
+  '',
+  'Para guardar una foto en Drive, enviamela: el pie de foto sera el nombre del archivo.',
+  'Cualquier otro mensaje genera un poster, como siempre.',
 ].join('\n');
 
 // Pone `head` al inicio de un nodo Code. `marker` es el comienzo del codigo original del nodo:
@@ -125,6 +164,16 @@ function patchParsear(code, formato) {
     tail = replaceOnce(tail, /\/\/ Reglas finales fijas[\s\S]*?(?=return \[\{ json: \{ valido: valido)/, () => PARSEAR_REGLAS, 'Parsear salida', 'reglas finales');
   }
   return formato + '\n' + tail;
+}
+
+function patchDetectar(code, comandos) {
+  let tail = code.slice(code.indexOf('var m = {};'));
+  if (!tail.startsWith('var m = {};')) throw new Error('Nodo "Detectar ruta": no se encontró el inicio del código');
+  if (!tail.includes('interpretarComando(')) {
+    // El intérprete escrito a mano (hasta el final del nodo) se cambia por la llamada a n8n/comandos.js.
+    tail = replaceOnce(tail, /\/\/ ---- Comandos de texto fijo \(sin IA\) ----[\s\S]*$/, () => DETECTAR_COMANDOS, 'Detectar ruta', 'bloque de comandos');
+  }
+  return comandos + '\n' + tail;
 }
 
 function patchPrepararWan(code, formato) {
@@ -350,6 +399,14 @@ export function patchWorkflow(workflow, snippets) {
   if (!trans || !trans.some((c) => c.node === 'Firmar settings')) throw new Error('"Transcribir audio" ya no conecta con "Firmar settings"');
   if (!trans.some((c) => c.node === 'Firmar consumo')) trans.push({ node: 'Firmar consumo', type: 'main', index: 0 });
 
+  // 7. Comandos del chat: suspender, programar y difuminar (n8n/comandos.js y n8n/respuestas.js).
+  const comandos = snippets.comandos.replace(/\s+$/, '');
+  const respuestas = snippets.respuestas.replace(/\s+$/, '');
+  const detectar = get('Detectar ruta');
+  detectar.parameters.jsCode = patchDetectar(detectar.parameters.jsCode, comandos);
+  get('Armar respuesta').parameters.jsCode = respuestas + '\n\n' + ARMAR_RESPUESTA;
+  get('Enviar ayuda').parameters.textBody = AYUDA;
+
   if ('nodeCount' in wf) wf.nodeCount = wf.nodes.length;
   return wf;
 }
@@ -360,7 +417,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error('Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>');
     process.exit(1);
   }
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const wf = patchWorkflow(JSON.parse(readFileSync(input, 'utf8')), snippets);
   // Solo lo que el editor de n8n necesita para importar.
   const { name, nodes, connections, settings } = wf;

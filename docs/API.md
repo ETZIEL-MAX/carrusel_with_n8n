@@ -327,7 +327,10 @@ cuerpo crudo con `WEBHOOK_SECRET`.
 
 | Body | Qué hace |
 |---|---|
-| `{ "action": "list" }` | Devuelve `{ count, slideDuration, images: [{ index, id, url, alt, duration, effectiveDuration }] }`. |
+| `{ "action": "list" }` | Devuelve `{ count, slideDuration, images: [{ index, id, url, alt, duration, effectiveDuration, suspended, schedule, blur, visibleNow }] }`. Las suspendidas siguen en la lista y conservan su número. |
+| `{ "action": "suspend", "index": 3 }` / `{ "action": "resume", "index": 3 }` | Suspende (no borra) o reactiva la imagen. |
+| `{ "action": "schedule", "index": 3, "schedule": { "days": [5], "from": "2026-10-17", "to": "2026-11-23" } }` | Programa cuándo se muestra; `"schedule": null` = siempre. Mismas reglas que `PATCH /api/images`. |
+| `{ "action": "blur", "index": 3, "blur": true }` | Enciende o apaga el fondo difuminado de esa imagen. |
 | `{ "action": "duration", "index": 3, "duration": 20 }` | La imagen #3 dura 20 s. |
 | `{ "action": "duration", "index": "all", "duration": 12 }` | Cambia la duración por defecto del carrusel. |
 | `{ "action": "delete", "index": 3 }` | Borra la imagen #3 (y su archivo). No se puede deshacer. |

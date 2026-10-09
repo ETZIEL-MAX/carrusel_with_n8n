@@ -324,6 +324,16 @@ El workflow `DIRECTOR_DE_ARTE_TELEGRAM` lo usa con comandos de texto fijo (sin I
 | `duracion 3 20` | La imagen #3 dura 20 s. |
 | `duracion todas 12` | Duración por defecto del carrusel. |
 | `borrar 3` | Pide confirmación y borra la imagen #3. |
+| `suspender 3` / `activar 3` | Deja de mostrarla sin borrarla / la vuelve a mostrar. |
+| `programar 3 viernes` | Solo ese día. Acepta varios (`lunes miércoles`) y rangos (`lunes a viernes`). |
+| `programar 3 del 17 de oct al 23 de nov` | Solo entre esas fechas (también `17/10 23/11`). Se combina con días. |
+| `programar 3 siempre` | Quita la programación. |
+| `difuminar 3 si` / `difuminar 3 no` | Fondo difuminado o negro cuando la imagen no llena la pantalla. |
+
+En el flujo de WhatsApp (`COPIA_SEGURIDAD_DIRECTOR_ARTE`) el intérprete y las respuestas viven en
+el repo: `n8n/comandos.js` (nodo `Detectar ruta`) y `n8n/respuestas.js` (nodo `Armar respuesta`), con
+pruebas en `npm run test:n8n`. Una fecha sin año es la próxima que toque (zona `America/Monterrey`).
+Un comando mal escrito responde con la ayuda; un mensaje que no es comando genera un póster.
 
 Además, una **foto** enviada al bot se guarda tal cual en la carpeta de Drive del panel
 (el pie de foto es el nombre del archivo), sin pasar por el agente de IA. Si la cuenta de
