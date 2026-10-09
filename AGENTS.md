@@ -65,7 +65,8 @@ for Redis (see git history for a full integration harness pattern).
     config (super-admin). `usage/[userId].js` — HMAC; n8n reports generation events.
 
 Stored images are converted to WebP (q90) and capped at 3840 px on the long side (`MAX_IMAGE_SIDE` in `_store.js`),
-so a 4K poster keeps its size. The poster size a client asks n8n for is `defaultOrientation` + `posterResolution`
+so a 4K poster keeps its size. Above 1920 px `webpProfile` uses a light encoder profile: a 4K photo with the
+normal one peaks near 217 MB and two at once OOM-kill the 256 MB container. The poster size a client asks n8n for is `defaultOrientation` + `posterResolution`
 (`posterSize` in `_utils.js`; `hd`/`fullhd`/`2k`/`4k` = short side 720/1080/1440/2160).
 
 Data lives under a single key: `carousel:images` (a JSON array). In local mode

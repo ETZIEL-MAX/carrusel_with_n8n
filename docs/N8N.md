@@ -464,9 +464,12 @@ si faltan (servidor viejo), cae en la tabla Full HD de siempre. La tabla de tama
 
 Lo que hace el flujo con ese tamaño (fuente en `n8n/formato.js`):
 
-- **Wan** recibe como máximo 2048 px de lado (`tamanoGeneracion`) y **Qwen** lo que genera por defecto
-  (el modelo `qwen-image-3.0-pro` no tiene opción de tamaño). El nodo `Optimizar imagen` lleva el póster
-  al tamaño del panel escalando por área, así que un 2K o 4K puede salir ampliado.
+- **Wan** recibe el tamaño del póster llevado a un área entre 768×768 y 1440×1440 píxeles
+  (`tamanoGeneracion`): 1920×1080 es justo 1440×1440 y es lo único probado en producción, así que un 2K o
+  4K se le pide como Full HD. **Qwen** genera lo que genera por defecto (`qwen-image-3.0-pro` no tiene opción
+  de tamaño). El nodo `Optimizar imagen` lleva después el póster al tamaño del panel escalando por área:
+  un 2K o 4K sale **ampliado**. Para subir el área de Wan, cambiar `WAN_MAX_PIXELES` en `n8n/formato.js`
+  solo después de probarlo con un mensaje real y volver a correr el parche.
 - **El logo** mide 420×224 con 50 px de margen en Full HD (lado corto 1080), en cualquier formato, y escala
   con el lado corto: HD ×2/3, 2K ×4/3, 4K ×2 (`zonaLogo`). Se coloca en la esquina del póster real (`posicionLogo`).
 - **El prompt** ya no lo redacta un nodo de agente (no entrega los tokens que gasta): `Armar prompt` arma
