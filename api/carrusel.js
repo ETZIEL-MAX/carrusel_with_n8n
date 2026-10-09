@@ -1,4 +1,4 @@
-import { getImages, getGenerationSettings, DEFAULT_SLIDE_DURATION, errorResponse, successResponse, checkRateLimit, getClientIp, normalizeUserId } from './_utils.js';
+import { getImages, isVisibleAt, getGenerationSettings, DEFAULT_SLIDE_DURATION, errorResponse, successResponse, checkRateLimit, getClientIp, normalizeUserId } from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
@@ -21,7 +21,8 @@ export async function GET(request) {
   }
   
   try {
-    const images = await getImages(userId);
+    // Solo lo que toca mostrar ahora: ni suspendidas ni fuera de su programación.
+    const images = (await getImages(userId)).filter((img) => isVisibleAt(img));
     const settings = await getGenerationSettings(userId);
     const slideDuration = settings?.slideDuration ?? DEFAULT_SLIDE_DURATION;
     return successResponse({ images, slideDuration }, 'Images retrieved');

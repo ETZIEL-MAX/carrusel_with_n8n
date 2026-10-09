@@ -911,6 +911,84 @@ export async function saveImages(userId, images) {
 
 const VIEWS = ['auto', 'horizontal', 'vertical', 'rotate'];
 
+// ==================== Suspender y programar ====================
+// Cada imagen puede estar suspendida (`suspended`) o programada (`schedule`): días de la semana
+// (0 = domingo … 6 = sábado) y/o un rango de fechas AAAA-MM-DD, ambos extremos incluidos.
+// El día y la fecha se cuentan en la zona del negocio, no en UTC.
+const DEFAULT_TIMEZONE = 'America/Monterrey';
+function validTimeZone(tz) {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
+}
+export const CAROUSEL_TIMEZONE = (() => {
+  const tz = process.env.CAROUSEL_TIMEZONE;
+  if (!tz) return DEFAULT_TIMEZONE;
+  if (validTimeZone(tz)) return tz;
+  console.warn(`AVISO: CAROUSEL_TIMEZONE="${tz}" no es una zona horaria válida; se usa ${DEFAULT_TIMEZONE}.`);
+  return DEFAULT_TIMEZONE;
+})();
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function localDay(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return { weekday: WEEKDAYS.indexOf(get('weekday')), ymd: `${get('year')}-${get('month')}-${get('day')}` };
+}
+
+// ¿Se muestra esta imagen en ese momento? La usa el carrusel público.
+export function isVisibleAt(item, date = new Date(), timeZone = CAROUSEL_TIMEZONE) {
+  if (!item || item.suspended === true) return false;
+  const s = item.schedule;
+  if (!s || typeof s !== 'object') return true;
+  const { weekday, ymd } = localDay(date, timeZone);
+  if (Array.isArray(s.days) && s.days.length > 0 && !s.days.includes(weekday)) return false;
+  if (s.from && ymd < s.from) return false;
+  if (s.to && ymd > s.to) return false;
+  return true;
+}
+
+const isRealDate = (v) => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+};
+
+// Valida y deja en forma canónica una programación. Devuelve { value } o { error }.
+// `null` (o una programación sin días ni fechas) significa «siempre».
+export function normalizeSchedule(schedule) {
+  if (schedule === null) return { value: null };
+  if (typeof schedule !== 'object' || Array.isArray(schedule)) return { error: 'schedule debe ser un objeto { days, from, to } o null' };
+  let days = null;
+  if (schedule.days != null) {
+    if (!Array.isArray(schedule.days) || schedule.days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) {
+      return { error: 'schedule.days debe ser una lista de días de 0 (domingo) a 6 (sábado)' };
+    }
+    if (new Set(schedule.days).size !== schedule.days.length) return { error: 'schedule.days no puede repetir un día' };
+    days = schedule.days.length ? schedule.days.slice().sort((a, b) => a - b) : null;
+  }
+  const dates = {};
+  for (const key of ['from', 'to']) {
+    const v = schedule[key];
+    if (v == null || v === '') { dates[key] = null; continue; }
+    if (!isRealDate(v)) return { error: `schedule.${key} debe ser una fecha AAAA-MM-DD que exista` };
+    dates[key] = v;
+  }
+  if (dates.from && dates.to && dates.from > dates.to) return { error: 'schedule.from no puede ser posterior a schedule.to' };
+  if (!days && !dates.from && !dates.to) return { value: null };
+  return { value: { days, from: dates.from, to: dates.to } };
+}
+
+// Errores de los campos de visibilidad de una imagen (solo los que vengan).
+function visibilityErrors(data) {
+  const errors = [];
+  if (data.blur !== undefined && typeof data.blur !== 'boolean') errors.push('blur debe ser true o false');
+  if (data.suspended !== undefined && typeof data.suspended !== 'boolean') errors.push('suspended debe ser true o false');
+  if (data.schedule !== undefined) {
+    const { error } = normalizeSchedule(data.schedule);
+    if (error) errors.push(error);
+  }
+  return errors;
+}
+
 export async function addImage(userId, imageData) {
   const images = await getImages(userId);
   const newImage = {
@@ -919,6 +997,9 @@ export async function addImage(userId, imageData) {
     alt: imageData.alt || '',
     view: VIEWS.includes(imageData.view) ? imageData.view : 'auto',
     duration: normalizeDuration(imageData.duration),
+    blur: imageData.blur === true,
+    suspended: imageData.suspended === true,
+    schedule: imageData.schedule == null ? null : (normalizeSchedule(imageData.schedule).value ?? null),
     order: imageData.order ?? (images.length > 0 ? Math.max(...images.map(i => i.order)) + 1 : 0),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -935,9 +1016,10 @@ export async function updateImage(userId, id, updates) {
 
   // Solo campos editables (evita que el body agregue/pise propiedades arbitrarias).
   const allowed = {};
-  for (const k of ['url', 'alt', 'order', 'view', 'duration']) {
+  for (const k of ['url', 'alt', 'order', 'view', 'duration', 'blur', 'suspended']) {
     if (updates[k] !== undefined) allowed[k] = updates[k];
   }
+  if (updates.schedule !== undefined) allowed.schedule = normalizeSchedule(updates.schedule).value ?? null;
   images[index] = {
     ...images[index],
     ...allowed,
@@ -1015,12 +1097,21 @@ export async function appendImages(userId, newImages) {
 
 export async function replaceAllImages(userId, newImages) {
   const prev = await getImages(userId);
+  // Una imagen que ya estaba (mismo id o misma URL) conserva si estaba suspendida,
+  // programada o con difuminado: reemplazar la lista no la vuelve a mostrar.
+  const prevById = new Map(prev.map((p) => [p.id, p]));
+  const prevByUrl = new Map(prev.map((p) => [p.url, p]));
+  const kept = (img) => {
+    const old = prevById.get(img.id) || prevByUrl.get(img.url);
+    return old ? { blur: old.blur === true, suspended: old.suspended === true, schedule: old.schedule ?? null } : {};
+  };
   const images = newImages.map((img, index) => ({
     id: img.id || randomUUID(),
     url: img.url,
     alt: img.alt || '',
     view: VIEWS.includes(img.view) ? img.view : 'auto',
     duration: normalizeDuration(img.duration),
+    ...kept(img),
     order: img.order ?? index,
     createdAt: img.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -1094,6 +1185,7 @@ export function validateImageData(data) {
     errors.push(DURATION_ERROR);
   }
 
+  errors.push(...visibilityErrors(data));
   return errors;
 }
 
@@ -1123,6 +1215,7 @@ export function validateImagePatch(data) {
     errors.push(DURATION_ERROR);
   }
 
+  errors.push(...visibilityErrors(data));
   return errors;
 }
 

@@ -380,6 +380,76 @@ async function runTests() {
     check('posterSize con valores inválidos -> 1920x1080', J(posterSize('x', 'y')) === J({ width: 1920, height: 1080 }), J(posterSize('x', 'y')));
   }
 
+
+  console.log('\n== Suspender, programar y difuminado por imagen ==');
+  {
+    const { isVisibleAt } = await import('../api/_utils.js');
+    const TZ = 'America/Monterrey'; // UTC-6 todo el año
+    const d = (iso) => new Date(iso);
+    // 2026-10-16 es viernes (5); 2026-10-15 es jueves (4)
+    check('sin programación ni suspensión -> se ve', isVisibleAt({}, d('2026-10-16T18:00:00Z'), TZ) === true && isVisibleAt({ schedule: null, suspended: false }, d('2026-10-16T18:00:00Z'), TZ) === true);
+    check('suspendida -> no se ve aunque hoy toque', isVisibleAt({ suspended: true, schedule: { days: [5] } }, d('2026-10-16T18:00:00Z'), TZ) === false);
+    check('solo viernes: viernes sí, jueves no', isVisibleAt({ schedule: { days: [5] } }, d('2026-10-16T18:00:00Z'), TZ) === true && isVisibleAt({ schedule: { days: [5] } }, d('2026-10-15T18:00:00Z'), TZ) === false);
+    // 03:00 UTC del sábado 17 todavía es viernes 16, 21:00, en Monterrey
+    check('el día se cuenta en Monterrey, no en UTC', isVisibleAt({ schedule: { days: [5] } }, d('2026-10-17T03:00:00Z'), TZ) === true && isVisibleAt({ schedule: { days: [5] } }, d('2026-10-17T07:00:00Z'), TZ) === false);
+    const rango = { schedule: { from: '2026-10-17', to: '2026-11-23' } };
+    check('rango de fechas: los dos extremos entran', isVisibleAt(rango, d('2026-10-17T06:00:00Z'), TZ) === true && isVisibleAt(rango, d('2026-11-24T05:59:00Z'), TZ) === true);
+    check('rango de fechas: un minuto antes y un minuto después quedan fuera', isVisibleAt(rango, d('2026-10-17T05:59:00Z'), TZ) === false && isVisibleAt(rango, d('2026-11-24T06:00:00Z'), TZ) === false);
+    check('solo «desde» o solo «hasta»', isVisibleAt({ schedule: { from: '2026-10-17' } }, d('2027-05-01T18:00:00Z'), TZ) === true && isVisibleAt({ schedule: { from: '2026-10-17' } }, d('2026-10-10T18:00:00Z'), TZ) === false
+      && isVisibleAt({ schedule: { to: '2026-11-23' } }, d('2026-10-10T18:00:00Z'), TZ) === true && isVisibleAt({ schedule: { to: '2026-11-23' } }, d('2026-12-01T18:00:00Z'), TZ) === false);
+    const ambos = { schedule: { days: [5], from: '2026-10-17', to: '2026-11-23' } };
+    check('días y fechas a la vez: tienen que cumplirse los dos', isVisibleAt(ambos, d('2026-10-23T18:00:00Z'), TZ) === true && isVisibleAt(ambos, d('2026-10-22T18:00:00Z'), TZ) === false && isVisibleAt(ambos, d('2026-10-16T18:00:00Z'), TZ) === false);
+    check('lista de días vacía = todos los días', isVisibleAt({ schedule: { days: [] } }, d('2026-10-15T18:00:00Z'), TZ) === true);
+
+    // --- API ---
+    const adminImages = async () => (await (await fetch(BASE + '/api/images?userId=USER1', { headers: { cookie: adminCookie } })).json()).data?.images || [];
+    const publicImages = async () => (await (await fetch(BASE + '/api/carrusel?userId=USER1')).json()).data?.images || [];
+    const patch = (payload) => fetch(BASE + '/api/images?userId=USER1', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: adminCookie }, body: J(payload) });
+    const total = (await adminImages()).length;
+    const img = (await adminImages())[0];
+    check('una imagen nueva no trae difuminado, suspensión ni programación', (await publicImages()).length === total && !img.blur && !img.suspended && !img.schedule, J([img.blur, img.suspended, img.schedule]));
+
+    r = await patch({ id: img.id, suspended: true });
+    let saved = (await r.json()).data;
+    check('PATCH suspended: true', r.status === 200 && saved?.suspended === true, r.status);
+    check('  el carrusel público ya no la entrega', (await publicImages()).length === total - 1 && !(await publicImages()).some((i) => i.id === img.id));
+    check('  el panel la sigue viendo, marcada', (await adminImages()).length === total && (await adminImages()).find((i) => i.id === img.id)?.suspended === true);
+    r = await patch({ id: img.id, suspended: false });
+    check('reactivar la devuelve al carrusel', r.status === 200 && (await publicImages()).length === total);
+
+    // Día de hoy en la zona del servidor de pruebas (por defecto America/Monterrey)
+    const hoy = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: TZ }).format(new Date()));
+    r = await patch({ id: img.id, schedule: { days: [(hoy + 1) % 7] } });
+    check('programada para otro día -> hoy no sale', r.status === 200 && (await publicImages()).length === total - 1, r.status);
+    r = await patch({ id: img.id, schedule: { days: [hoy, (hoy + 3) % 7] } });
+    saved = (await r.json()).data;
+    check('programada para hoy -> sale, y los días se guardan ordenados', (await publicImages()).length === total && J(saved?.schedule?.days) === J([hoy, (hoy + 3) % 7].sort((a, b) => a - b)), J(saved?.schedule));
+    r = await patch({ id: img.id, schedule: { from: '2020-01-01', to: '2020-12-31' } });
+    check('rango ya pasado -> no sale', r.status === 200 && (await publicImages()).length === total - 1);
+    r = await patch({ id: img.id, schedule: null });
+    check('schedule: null quita la programación', r.status === 200 && (await r.json()).data?.schedule === null && (await publicImages()).length === total);
+
+    for (const [nombre, payload] of [
+      ['día fuera de 0-6', { schedule: { days: [7] } }],
+      ['día repetido', { schedule: { days: [5, 5] } }],
+      ['días que no son lista', { schedule: { days: 'viernes' } }],
+      ['fecha que no existe', { schedule: { from: '2026-02-30' } }],
+      ['fecha con otro formato', { schedule: { from: '17/10/2026' } }],
+      ['«hasta» antes de «desde»', { schedule: { from: '2026-11-23', to: '2026-10-17' } }],
+      ['schedule que no es objeto', { schedule: 'viernes' }],
+      ['suspended que no es booleano', { suspended: 'si' }],
+      ['blur que no es booleano', { blur: 1 }],
+    ]) {
+      r = await patch({ id: img.id, ...payload });
+      check('validación: ' + nombre + ' -> 400', r.status === 400, r.status);
+    }
+    check('  nada de lo inválido se guardó', J((await adminImages()).find((i) => i.id === img.id)?.schedule ?? null) === 'null' && !(await adminImages()).find((i) => i.id === img.id)?.suspended);
+
+    r = await patch({ id: img.id, blur: true });
+    check('PATCH blur: true llega al carrusel público', r.status === 200 && (await publicImages()).find((i) => i.id === img.id)?.blur === true);
+    r = await patch({ id: img.id, blur: false });
+    check('  y se puede apagar', r.status === 200 && (await publicImages()).find((i) => i.id === img.id)?.blur === false);
+  }
   r = await fetch(BASE + '/api/carrusel?userId=INVALID');
   check('GET /api/carrusel invalid userId -> 400', r.status === 400, r.status);
 
@@ -429,6 +499,17 @@ async function runTests() {
   r = await fetch(BASE + '/api/webhook/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
   wh = await r.json();
   check('webhook replace USER1', r.status === 200 && wh.data.count === 1 && wh.data.images?.length === 1, r.status + ' total=' + wh.data?.images?.length);
+
+  // Un reemplazo por webhook no «des-suspende» ni quita la programación de la imagen que ya estaba
+  {
+    const only = wh.data.images[0];
+    await fetch(BASE + '/api/images?userId=USER1', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: adminCookie }, body: J({ id: only.id, suspended: true, blur: true, schedule: { days: [5] } }) });
+    body = J({ images: [{ url: 'https://x.test/only.jpg', alt: 'Solo otra vez' }], mode: 'replace' });
+    r = await fetch(BASE + '/api/webhook/USER1', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
+    const kept = (await (await fetch(BASE + '/api/images?userId=USER1', { headers: { cookie: adminCookie } })).json()).data?.images?.[0] || {};
+    check('webhook replace conserva suspendida, difuminado y programación de la misma URL', r.status === 200 && kept.suspended === true && kept.blur === true && J(kept.schedule?.days) === '[5]' && kept.alt === 'Solo otra vez', J([kept.suspended, kept.blur, kept.schedule]));
+    await fetch(BASE + '/api/images?userId=USER1', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: adminCookie }, body: J({ id: kept.id, suspended: false, blur: false, schedule: null }) });
+  }
 
   console.log('\n== Manage (HMAC, desde el chat) ==');
   const manage = async (payload, user = 'USER1', sig) => {
