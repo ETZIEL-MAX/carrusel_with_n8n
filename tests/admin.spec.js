@@ -35,6 +35,42 @@ test('configuración: paleta, Drive y orientación se guardan y persisten', asyn
   expect(await w.csp()).toEqual([]);
 });
 
+test('configuración: la resolución del póster se elige, muestra su tamaño y persiste', async ({ page }) => {
+  const w = watchPage(page);
+  await uiLogin(page);
+  await page.click('#userSettingsBtn');
+  await expect(page.locator('#settingsModalBackdrop')).toHaveClass(/is-open/);
+
+  await expect(page.locator('#resSeg .seg__btn')).toHaveCount(4);
+  await page.click('#orientV');
+  await page.click('#resSeg [data-value="4k"]');
+  await expect(page.locator('#resSeg [data-value="4k"]')).toHaveClass(/is-active/);
+  await expect(page.locator('#formatSizeHint')).toHaveText('Tamaño del póster: 2160 × 3840 px');
+  await page.click('#orientH43');
+  await page.click('#resSeg [data-value="2k"]');
+  await expect(page.locator('#formatSizeHint')).toHaveText('Tamaño del póster: 1920 × 1440 px');
+  await page.click('#orientV');
+  await page.click('#resSeg [data-value="4k"]');
+
+  await page.click('#settingsSaveGenBtn');
+  await expect(page.locator('#genFormOk')).toContainText('Guardado correctamente');
+  const saved = (await (await page.request.get('/api/settings')).json()).data;
+  expect(saved.defaultOrientation).toBe('vertical');
+  expect(saved.posterResolution).toBe('4k');
+
+  // Recordar al recargar la página
+  await page.reload();
+  await page.click('#userSettingsBtn');
+  await expect(page.locator('#resSeg [data-value="4k"]')).toHaveClass(/is-active/);
+  await expect(page.locator('#orientV')).toHaveClass(/is-active/);
+  await expect(page.locator('#formatSizeHint')).toHaveText('Tamaño del póster: 2160 × 3840 px');
+
+  // Dejar al cliente como estaba
+  await page.request.patch('/api/settings', { data: { posterResolution: 'fullhd', defaultOrientation: 'horizontal' } });
+  expect(w.problems, w.problems.join('\n')).toEqual([]);
+  expect(await w.csp()).toEqual([]);
+});
+
 test('subir imagen desde el admin la guarda como WebP', async ({ page }) => {
   await uiLogin(page);
   const before = await page.locator('#userGrid .image-card').count();

@@ -277,15 +277,25 @@
         <button class="btn" type="button" id="addColorBtn" style="margin-top:.4rem;">+ Color</button>
       </div>
       <div class="field">
-        <label>Formato por defecto (resolución)</label>
+        <label>Formato por defecto</label>
         <div class="seg" id="orientSeg">
-          <button class="seg__btn" type="button" id="orientH" data-value="horizontal">▭ Horizontal 16:9 · 1920×1080</button>
-          <button class="seg__btn" type="button" id="orientV" data-value="vertical">▯ Vertical 9:16 · 1080×1920</button>
-          <button class="seg__btn" type="button" id="orientSq" data-value="cuadrado">◻ Cuadrado 1:1 · 1080×1080</button>
-          <button class="seg__btn" type="button" id="orientH43" data-value="horizontal43">▭ Horizontal 4:3 · 1440×1080</button>
-          <button class="seg__btn" type="button" id="orientV34" data-value="vertical34">▯ Vertical 3:4 · 1080×1440</button>
+          <button class="seg__btn" type="button" id="orientH" data-value="horizontal">▭ Horizontal 16:9</button>
+          <button class="seg__btn" type="button" id="orientV" data-value="vertical">▯ Vertical 9:16</button>
+          <button class="seg__btn" type="button" id="orientSq" data-value="cuadrado">◻ Cuadrado 1:1</button>
+          <button class="seg__btn" type="button" id="orientH43" data-value="horizontal43">▭ Horizontal 4:3</button>
+          <button class="seg__btn" type="button" id="orientV34" data-value="vertical34">▯ Vertical 3:4</button>
         </div>
         <p class="hint">El bot tomará como referencia esto si no es especificado en el mensaje de WhatsApp.</p>
+      </div>
+      <div class="field">
+        <label>Resolución del póster</label>
+        <div class="seg" id="resSeg">
+          <button class="seg__btn" type="button" id="resHd" data-value="hd">HD</button>
+          <button class="seg__btn" type="button" id="resFullHd" data-value="fullhd">Full HD</button>
+          <button class="seg__btn" type="button" id="res2k" data-value="2k">2K</button>
+          <button class="seg__btn" type="button" id="res4k" data-value="4k">4K</button>
+        </div>
+        <p class="hint" id="formatSizeHint" aria-live="polite"></p>
       </div>
       <div class="field">
         <label for="genSlideDuration">Duración por defecto de cada imagen (segundos)</label>

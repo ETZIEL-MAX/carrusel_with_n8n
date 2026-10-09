@@ -120,10 +120,13 @@
   const generateImagesBtn = document.getElementById('generateImagesBtn');
   const settingsSaveGenBtn = document.getElementById('settingsSaveGenBtn');
   const orientSeg = document.getElementById('orientSeg');
+  const resSeg = document.getElementById('resSeg');
+  const formatSizeHint = document.getElementById('formatSizeHint');
   const viewSeg = document.getElementById('viewSeg');
 
   // ===== State =====
   let genOrientation = 'horizontal'; // default de generación (settings)
+  let genResolution = 'fullhd'; // resolución del póster (settings)
   let imgView = 'auto'; // orientación de la imagen en edición
   let session = null; // { role, userId, name, email }
   let superAdminUsers = [];
@@ -243,6 +246,23 @@ function escapeHtml(str) {
 
   const FORMATS = ['horizontal', 'vertical', 'cuadrado', 'horizontal43', 'vertical34'];
   const normFormat = (f) => (FORMATS.includes(f) ? f : 'horizontal');
+
+  // Tamaño del póster = formato + resolución (lado corto). Misma tabla que posterSize en
+  // api/_utils.js y tamanoPoster en n8n/formato.js.
+  const RESOLUTIONS = ['hd', 'fullhd', '2k', '4k'];
+  const RESOLUTION_SHORT_SIDE = { hd: 720, fullhd: 1080, '2k': 1440, '4k': 2160 };
+  const FORMAT_RATIO = { horizontal: [16, 9], vertical: [9, 16], cuadrado: [1, 1], horizontal43: [4, 3], vertical34: [3, 4] };
+  const normResolution = (r) => (RESOLUTIONS.includes(r) ? r : 'fullhd');
+  function posterSize(format, resolution) {
+    const [rw, rh] = FORMAT_RATIO[normFormat(format)];
+    const unit = RESOLUTION_SHORT_SIDE[normResolution(resolution)] / Math.min(rw, rh);
+    return { width: Math.round(rw * unit), height: Math.round(rh * unit) };
+  }
+  function renderSizeHint() {
+    if (!formatSizeHint) return;
+    const { width, height } = posterSize(genOrientation, genResolution);
+    formatSizeHint.textContent = `Tamaño del póster: ${width} × ${height} px`;
+  }
 
   // Duración escrita en un <input type="number">: vacío -> null (usa la del carrusel).
   const MIN_DURATION = 2;
@@ -701,6 +721,17 @@ function escapeHtml(str) {
       if (!b) return;
       genOrientation = normFormat(b.dataset.value);
       markSeg(orientSeg, genOrientation);
+      renderSizeHint();
+      clearGenOk();
+    });
+  }
+  if (resSeg) {
+    resSeg.addEventListener('click', (e) => {
+      const b = e.target.closest('.seg__btn');
+      if (!b) return;
+      genResolution = normResolution(b.dataset.value);
+      markSeg(resSeg, genResolution);
+      renderSizeHint();
       clearGenOk();
     });
   }
@@ -790,7 +821,10 @@ function escapeHtml(str) {
     genFormOk.hidden = true;
     genFormOk.textContent = '';
     genOrientation = 'horizontal';
+    genResolution = 'fullhd';
     markSeg(orientSeg, genOrientation);
+    markSeg(resSeg, genResolution);
+    renderSizeHint();
     renderColorPalette();
 
     settingsModalBackdrop.classList.add('is-open');
@@ -816,7 +850,10 @@ function escapeHtml(str) {
       genSlideDuration.value = s.slideDuration || '';
       colorSwatches = Array.isArray(s.colorPalette) ? s.colorPalette.map((hex) => ({ hex })) : [];
       genOrientation = normFormat(s.defaultOrientation);
+      genResolution = normResolution(s.posterResolution);
       markSeg(orientSeg, genOrientation);
+      markSeg(resSeg, genResolution);
+      renderSizeHint();
       renderColorPalette();
     } catch { /* leave fields empty */ }
   }
@@ -932,6 +969,7 @@ function escapeHtml(str) {
       googleDriveFolder: genDriveUrl.value.trim() || null,
       colorPalette: palette.length ? palette : null,
       defaultOrientation: genOrientation,
+      posterResolution: genResolution,
     };
     try {
       genPayload.slideDuration = readDuration(genSlideDuration);
