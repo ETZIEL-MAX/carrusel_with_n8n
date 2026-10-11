@@ -13,18 +13,32 @@ En el lienzo de n8n los nodos están agrupados en **12 secciones**, cada una con
 que tiene su número y su título. Un mensaje las recorre así:
 
 ```
-1 Entrada → 2 Audio → 3 Ajustes → 4 JEV ─┬─ foto ......... 5 Foto → Drive
+1 Entrada → 2 Audio → 3 Ajustes → 4 JEV ─┬─ spam ......... no se contesta
+                                          ├─ foto ......... 5 Foto → Drive
                                           ├─ comando ...... 6 Comandos
                                           └─ póster ....... 7 Prompt → 8 Imagen → 9 Logo
                                                             → 10 Vista previa → 11 Publicar
 12 Consumo (arriba): recibe avisos del audio, del prompt y de la imagen
 ```
 
-### 1 · Entrada y token
+### 1 · Entrada, token y espera de 5 segundos
 `WhatsApp Trigger` → `Buscar token` → `Adjuntar token` → `Variables` → `Solo mi numero`
+→ `Es texto` → `Anotar mensaje` → `Esperar 5 segundos` → `Leer mensajes` → `Juntar mensajes` → `Soy el ultimo`
 
 El mensaje llega desde el flujo `RECEPCIONISTA_WHATSAPP`. Se busca la fila del cliente en la tabla
 `whatsapp_numeros` (por su número): de ahí salen su carrusel (`USER1`, `USER2`…) y su token.
+
+**Espera de 5 segundos.** La gente escribe en varios mensajes seguidos («Tacos al pastor», «3x50»,
+«solo hoy»). Para no contestar a cada uno, el bot contesta **una sola vez, 5 segundos después del
+último mensaje**, con el texto de todos junto:
+
+- Cada mensaje escrito se anota en la tabla `whatsapp_espera` (`Anotar mensaje`) y espera 5 segundos.
+- Al terminar la espera lee los mensajes de ese número (`Leer mensajes`). Si llegó otro después,
+  este se retira en `Mensaje juntado` y no contesta: lo hará el último.
+- El último sigue con el texto de todos (un renglón por mensaje) y vacía la espera (`Limpiar espera`).
+- Solo esperan los mensajes **escritos**: una nota de voz o una foto siguen de inmediato.
+- Si la tabla falla, el mensaje sigue solo con su texto: nunca se queda sin contestar.
+- **Para cambiar los 5 segundos:** nodo `Esperar 5 segundos` → *Wait Amount*.
 
 ### 2 · Audio
 `Es audio` → `Descargar audio` → `Bajar audio` → `Audio a base64` → `Transcribir audio`
@@ -37,7 +51,7 @@ Solo corre si mandaron una nota de voz. El texto transcrito se trata igual que u
 Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la resolución del póster.
 
 ### 4 · JEV: ¿qué quiere el cliente?
-`Hay texto` → `JEV` → `Detectar ruta` → `Es foto` → `Es comando` → `Es ayuda`
+`Hay texto` → `JEV` → `Detectar ruta` → `Es spam` → `Es foto` → `Es comando` → `Es ayuda`
 
 - **`Hay texto`**: si el mensaje trae texto (escrito o audio), lo lee JEV. Una foto sola pasa directo.
 - **`JEV`** es un nodo **HTTP Request** que llama al modelo JEV:
@@ -47,7 +61,7 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
 
   | Pregunta | Tipo | Qué contesta |
   |---|---|---|
-  | `tipo` | opción | `poster` o `comando` |
+  | `tipo` | opción | `poster`, `comando` o `spam` |
   | `sin_logo` | sí/no | qué tan probable es que pidan el póster sin logo (0 a 1) |
   | `accion` | opción | qué orden es: `lista`, `ayuda`, `borrar`, `suspender`, `activar`, `difuminar`, `quitar_difuminado` u `otra` |
   | `imagen` | opción | de cuál imagen habla: `imagen_1` … `imagen_12` o `ninguna` |
@@ -56,6 +70,7 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
 
   | Lo que contesta JEV | Qué pasa |
   |---|---|
+  | `tipo: spam` (saludos, charla, cadenas, publicidad ajena) | **No se contesta nada.** Termina en `Mensaje ignorado`. |
   | `tipo: poster` (un producto, una promoción **o un aviso**) | Se genera el póster y se le sobrepone el logo. |
   | `tipo: poster` y `sin_logo` alto | Se genera el póster **sin** logo. |
   | `tipo: comando` | Con `accion` + `imagen` se arma la orden (`SUSPENDER 2`) y se ejecuta. |
@@ -68,11 +83,11 @@ Lee del panel web la carpeta de Drive, la paleta de colores y el formato y la re
     `DURACION 3 20`). JEV elige entre opciones, no puede sacar días, fechas ni segundos de una
     frase; si alguien lo pide en frase libre, el bot contesta con la ayuda.
   - `BORRAR` sigue enseñando la imagen y pidiendo confirmación.
-  - **No hay filtro de spam.** Todo lo que no es una foto ni un comando sigue al póster. Si el
-    mensaje es solo un saludo («hola», «gracias»), el director no encuentra nada que anunciar y el
-    bot contesta «No entendí el mensaje».
-  - **JEV tiene que estar seguro** (0.6 o más, de 0 a 1). Un «comando» dudoso se trata como
-    póster, y un «sin logo» dudoso lleva logo.
+  - **Filtro de spam.** Un saludo («hola», «gracias», «ok»), una cadena o publicidad ajena no se
+    contesta. Un **aviso** del negocio («Cerrado el lunes», «Nuevo horario») **no es spam**: es un
+    póster. Un comando escrito tal cual y una foto nunca se tratan como spam.
+  - **JEV tiene que estar seguro** (0.6 o más, de 0 a 1). Un «spam» o «comando» dudoso se trata
+    como póster, y un «sin logo» dudoso lleva logo: es mejor un póster de más que ignorar a un cliente.
   - **Si JEV falla** (sin red, llave mala, sin saldo), el flujo sigue como si JEV no existiera:
     comandos exactos y, lo demás, póster con logo. Nunca deja al cliente colgado.
 
@@ -138,19 +153,22 @@ Hay dos IAs con instrucciones que puedes editar tú, directo en n8n, sin tocar c
    - `criteria`: las opciones y la descripción de cada una.
 3. Edita los **textos** y guarda. Luego **publica** el flujo.
 
-Ejemplo — para que «quita la promo vieja» se entienda como una orden, agrega esa frase a los
-ejemplos de la opción `comando` de la pregunta `tipo`:
+Ejemplo — para que los mensajes que solo traen un enlace cuenten como spam, agrégalo a la
+descripción de la opción `spam` de la pregunta `tipo`:
 
 ```json
-"comando": "Quiere administrar las imagenes que YA estan en el carrusel: ... Ejemplos: \"ya no muestres la segunda\", \"quita la promo vieja\"."
+"spam": "No hay nada que anunciar ni ordenar: saludos y charla, cadenas, publicidad ajena, cualquier mensaje que sea solo un enlace, ..."
 ```
 
 Reglas para no romperlo:
 
 - **Cambia las descripciones, no los nombres.** `tipo`, `sin_logo`, `accion`, `imagen` y los
-  nombres de las opciones (`poster`, `comando`, `borrar`, `imagen_3`…) los lee el código
+  nombres de las opciones (`spam`, `poster`, `comando`, `borrar`, `imagen_3`…) los lee el código
   de `Detectar ruta`.
-- No toques la línea de `"state"`: es la que mete el mensaje del cliente.
+- No toques la línea de `"state"`: es la que mete el mensaje del cliente (el script la vuelve a
+  escribir cada vez que se aplica).
+- No borres la opción `spam`: sin ella el filtro no funciona, y al volver a aplicar el script
+  las preguntas regresan a las de fábrica.
 - El cuerpo tiene que seguir siendo JSON válido (comillas dobles, comas entre elementos) y
   **nunca dos llaves pegadas** (`{{` o `}}`): n8n las tomaría por una fórmula. Por eso cada
   llave va en su renglón.
@@ -233,7 +251,8 @@ Después de publicar, manda estos mensajes desde un número dado de alta:
 
 | # | Mensaje | Qué debe pasar |
 |---|---|---|
-| 1 | `hola buenas tardes` | Contesta «No entendí el mensaje» (no hay nada que anunciar). |
+| 1 | `hola buenas tardes` | **Nada.** El bot no contesta (spam). |
+| 1a | Tres mensajes seguidos: `Tacos al pastor`, `3x50`, `solo hoy` | Contesta **una sola vez**, unos 5 segundos después del último, con un póster que trae los tres datos. |
 | 1b | `Cerrado el lunes por día festivo` | Llega un póster de **aviso**, con ese texto como protagonista. |
 | 2 | `Tacos al pastor 3x50 solo hoy` | Llega un póster **con** logo, **sin franja ni línea de color** a la derecha, y pregunta si lo publica. |
 | 3 | `Hamburguesa doble $89 sin logo` | Llega un póster **sin** logo; «sin logo» no aparece escrito en la imagen. |
@@ -244,7 +263,8 @@ Después de publicar, manda estos mensajes desde un número dado de alta:
 | 7 | Una nota de voz: «pizza familiar a ciento noventa y nueve» | Llega un póster, igual que con texto. |
 | 8 | Una foto con pie `tacos` | Contesta que la guardó en Drive como `tacos.jpg`. |
 
-Si el 3 sale con logo o el 5 genera un póster, JEV está fallando: casi siempre es la llave (punto 3).
+Si el 1 contesta algo o el 2 no contesta nada, revisa las preguntas de JEV (punto 2).
+Si **todo** sale como póster con logo (también el saludo), JEV está fallando: casi siempre es la llave (punto 3).
 
 ---
 
@@ -255,7 +275,8 @@ salen en verde; el que falló, en rojo.
 
 | Síntoma | Dónde mirar |
 |---|---|
-| No contestó nada | Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. Si la hay, mira en qué nodo se detuvo. |
+| No contestó nada | ¿Terminó en `Mensaje ignorado`? JEV lo tomó por spam: abre `JEV` y mira su salida (`answers.tipo`). ¿Terminó en `Mensaje juntado`? Llegó otro mensaje después y contestó ese. Si no hay ejecución, el mensaje no llegó desde `RECEPCIONISTA_WHATSAPP`. |
+| Contesta a cada mensaje en vez de juntarlos | Mira `Anotar mensaje` y `Leer mensajes`: si salen con error, falta la tabla `whatsapp_espera` (columnas `numero`, `mensaje_id`, `texto`). |
 | Sale una franja o línea de color donde va el logo | Revisa el texto `con_logo` de `Instrucciones del director`: debe prohibir franjas y zonas de otro color. Si lo dejaste vacío se usa el de fábrica. |
 | JEV sale con error | El flujo sigue igual (póster con logo). `401` = la llave está mal o falta (punto 3); `402` = sin saldo en jevmodel.org; `422` = el cuerpo JSON quedó mal después de editarlo; `429` = demasiadas llamadas por minuto. |
 | Hizo póster de algo que era un comando | Mira `Detectar ruta` → campo `jev` (lo que entendió JEV) y `ruta`. Ajusta las instrucciones de JEV. |

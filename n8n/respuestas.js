@@ -52,31 +52,31 @@ function armarRespuesta(cmd, r, base, anioActual) {
       var img = null, i;
       for (i = 0; i < d.images.length; i++) { if (d.images[i].index === cmd.index) { img = d.images[i]; break; } }
       if (!img) {
-        out.texto = '⚠️ No existe la imagen #' + cmd.index + '; hay ' + d.count + ' en el carrusel. Escribe LISTA para verlas.';
+        out.texto = '⚠️ No existe la imagen #' + cmd.index + '; hay ' + d.count + ' en el carrusel. Escribe *LISTA* para verlas.';
       } else {
         out.confirmar = true;
         out.index = img.index;
         out.fotoUrl = abs(img.url);
-        out.texto = '¿Borrar la imagen #' + img.index + ' del carrusel? No se puede deshacer.' + NL + out.fotoUrl;
+        out.texto = '🗑️ *¿Borrar la imagen #' + img.index + ' del carrusel?* No se puede deshacer.' + NL + out.fotoUrl;
         // Se borra por id: si alguien reordena mientras confirmas, no se borra otra.
         out.bodyToSign = JSON.stringify({ action: 'delete', id: img.id });
       }
     } else if (!d.images.length) {
-      out.texto = 'El carrusel esta vacio.';
+      out.texto = '📭 El carrusel esta vacio.';
     } else {
-      var lines = ['Imagenes del carrusel: ' + d.count + ' (por defecto ' + d.slideDuration + ' s)', ''], k, im, estado, prog;
+      var lines = ['🖼️ *Imagenes del carrusel: ' + d.count + '* (por defecto ' + d.slideDuration + ' s)', ''], k, im, estado, prog;
       for (k = 0; k < d.images.length; k++) {
         im = d.images[k];
-        estado = '#' + im.index + ' · ' + im.effectiveDuration + ' s' + (im.duration ? '' : ' (por defecto)');
-        if (im.suspended) { estado += ' · SUSPENDIDA'; }
+        estado = '*#' + im.index + '* · ' + im.effectiveDuration + ' s' + (im.duration ? '' : ' (por defecto)');
+        if (im.suspended) { estado += ' · ⏸️ *SUSPENDIDA*'; }
         prog = textoProgramacion(im.schedule, anioActual);
-        if (prog) { estado += ' · ' + prog; }
+        if (prog) { estado += ' · 📅 ' + prog; }
         if (!im.suspended && prog && im.visibleNow === false) { estado += ' · hoy no se muestra'; }
-        if (im.blur) { estado += ' · difuminado'; }
+        if (im.blur) { estado += ' · 🌫️ difuminado'; }
         lines.push(estado);
         lines.push(abs(im.url));
       }
-      var pie = ['', 'DURACION 3 20 · BORRAR 3 · SUSPENDER 3 · PROGRAMAR 3 VIERNES', 'AYUDA = todos los comandos'].join(NL);
+      var pie = ['', '⏱️ *DURACION 3 20* · 🗑️ *BORRAR 3* · ⏸️ *SUSPENDER 3* · 📅 *PROGRAMAR 3 VIERNES*', '❓ *AYUDA* = todos los comandos'].join(NL);
       out.texto = lines.join(NL);
       if (out.texto.length > 3900 - pie.length) { out.texto = out.texto.slice(0, 3900 - pie.length - 4) + NL + '...'; }
       out.texto += pie;
@@ -88,20 +88,20 @@ function armarRespuesta(cmd, r, base, anioActual) {
   if (cmd.accion === 'delete') {
     out.texto = '🗑️ Borrada la imagen #' + n + '. Quedan ' + d.count + ' en el carrusel.';
   } else if (cmd.accion === 'suspend') {
-    out.texto = '⏸️ La imagen #' + n + ' quedo suspendida: ya no se muestra, pero no se borro.' + NL + 'Para volver a mostrarla: ACTIVAR ' + n;
+    out.texto = '⏸️ La imagen #' + n + ' quedo suspendida: ya no se muestra, pero no se borro.' + NL + 'Para volver a mostrarla: *ACTIVAR ' + n + '*';
   } else if (cmd.accion === 'resume') {
     out.texto = '▶️ La imagen #' + n + ' vuelve a mostrarse.';
-    if (d.visibleNow === false) { out.texto += NL + 'Por su programacion, hoy no se muestra. Escribe LISTA para verla.'; }
+    if (d.visibleNow === false) { out.texto += NL + 'Por su programacion, hoy no se muestra. Escribe *LISTA* para verla.'; }
   } else if (cmd.accion === 'schedule') {
     if (!d.schedule) {
       out.texto = '📅 La imagen #' + n + ' se muestra siempre.';
     } else {
       out.texto = '📅 La imagen #' + n + ' queda programada: ' + textoProgramacion(d.schedule, anioActual) + '.';
       if (!d.suspended && d.visibleNow === false) { out.texto += NL + 'Hoy no se muestra.'; }
-      falta = 'Para quitar la programacion: PROGRAMAR ' + n + ' SIEMPRE';
+      falta = 'Para quitar la programacion: *PROGRAMAR ' + n + ' SIEMPRE*';
       out.texto += NL + falta;
     }
-    if (d.suspended) { out.texto += NL + 'Ojo: sigue suspendida. Para mostrarla: ACTIVAR ' + n; }
+    if (d.suspended) { out.texto += NL + 'Ojo: sigue suspendida. Para mostrarla: *ACTIVAR ' + n + '*'; }
   } else if (cmd.accion === 'blur') {
     out.texto = d.blur
       ? '🌫️ La imagen #' + n + ' ahora rellena con fondo difuminado cuando no llena la pantalla.'

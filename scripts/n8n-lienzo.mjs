@@ -13,26 +13,30 @@ const DY = 200; // alto de un renglón
 // El renglón 0 es la línea de entrada; las bandas de abajo empiezan en 5, 9 y 13.
 export const SECCIONES = [
   {
-    n: 1, titulo: 'Entrada y token', color: 7,
-    texto: 'Llega el mensaje desde RECEPCIONISTA_WHATSAPP. Se busca la fila del cliente en la tabla `whatsapp_numeros`: de ahí sale su carrusel y el token con el que se firma todo.',
-    nodos: { 'WhatsApp Trigger': [0, 0], 'Buscar token': [1, 0], 'Adjuntar token': [2, 0], Variables: [3, 0], 'Solo mi numero': [4, 0] },
+    n: 1, titulo: 'Entrada, token y espera de 5 segundos', color: 7,
+    texto: 'Llega el mensaje desde RECEPCIONISTA_WHATSAPP. Se busca la fila del cliente en la tabla `whatsapp_numeros`: de ahí sale su carrusel y el token con el que se firma todo.\n**Espera:** un mensaje escrito se anota en `whatsapp_espera` y espera 5 segundos. Si llega otro, el primero se retira y contesta el último con el texto de todos. El tiempo se cambia en `Esperar 5 segundos`.',
+    nodos: {
+      'WhatsApp Trigger': [0, 0], 'Buscar token': [1, 0], 'Adjuntar token': [2, 0], Variables: [3, 0], 'Solo mi numero': [4, 0],
+      'Es texto': [5, 0], 'Anotar mensaje': [6, 0], 'Esperar 5 segundos': [7, 0], 'Leer mensajes': [8, 0], 'Juntar mensajes': [9, 0],
+      'Soy el ultimo': [10, 0], 'Limpiar espera': [11, -1], 'Mensaje juntado': [11, 1],
+    },
   },
   {
     n: 2, titulo: 'Audio', color: 7,
     texto: 'Si el mensaje es una nota de voz, se descarga y se transcribe. El texto resultante se trata igual que un mensaje escrito.',
-    nodos: { 'Es audio': [5, 0], 'Descargar audio': [6, -1], 'Bajar audio': [7, -1], 'Audio a base64': [8, -1], 'Transcribir audio': [9, -1] },
+    nodos: { 'Es audio': [12, 0], 'Descargar audio': [13, -1], 'Bajar audio': [14, -1], 'Audio a base64': [15, -1], 'Transcribir audio': [16, -1] },
   },
   {
     n: 3, titulo: 'Ajustes del panel', color: 7,
     texto: 'Lee del panel web la carpeta de Drive, la paleta y el tamaño del póster.',
-    nodos: { 'Firmar settings': [10, 0], 'Traer settings': [11, 0] },
+    nodos: { 'Firmar settings': [17, 0], 'Traer settings': [18, 0] },
   },
   {
     n: 4, titulo: 'JEV: ¿qué quiere el cliente?', color: 4,
-    texto: '**JEV** (llamada HTTP al modelo de jevmodel.org) lee el mensaje y decide: **póster con logo**, **póster sin logo** o **comando**. Sus preguntas se editan en el nodo `JEV` → cuerpo JSON (`questions`); la llave va en la cabecera `Authorization`.\n`Detectar ruta` junta todo y reparte: una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
+    texto: '**JEV** (llamada HTTP al modelo de jevmodel.org) lee el mensaje y decide: **spam**, **póster con logo**, **póster sin logo** o **comando**. Sus preguntas se editan en el nodo `JEV` → cuerpo JSON (`questions`); la llave va en la cabecera `Authorization`.\n`Detectar ruta` junta todo y reparte: el spam no se contesta; una foto va a Drive (5); un comando va a (6); lo demás genera un póster (7).',
     nodos: {
-      'Hay texto': [12, 0], JEV: [13, 0], 'Detectar ruta': [14, 0],
-      'Es foto': [15, 0], 'Es comando': [16, 0], 'Es ayuda': [17, 0], 'Enviar ayuda': [18, -1],
+      'Hay texto': [19, 0], JEV: [20, 0], 'Detectar ruta': [21, 0], 'Es spam': [22, 0],
+      'Mensaje ignorado': [23, -1], 'Es foto': [23, 0], 'Es comando': [24, 0], 'Es ayuda': [25, 0], 'Enviar ayuda': [26, -1],
     },
   },
   {
@@ -97,7 +101,7 @@ export const SECCIONES = [
   {
     n: 12, titulo: 'Consumo', color: 2,
     texto: 'Avisa al panel cuántos tokens e imágenes se gastaron (JEV, audio, prompt e imagen). **No mover hacia abajo:** tiene que quedar arriba de todo para correr antes que el resto.',
-    nodos: { 'Firmar consumo': [10, -3], 'Reportar consumo': [11, -3] },
+    nodos: { 'Firmar consumo': [17, -3], 'Reportar consumo': [18, -3] },
   },
 ];
 

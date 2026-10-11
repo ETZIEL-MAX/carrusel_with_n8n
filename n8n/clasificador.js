@@ -8,15 +8,16 @@
 //
 // Las preguntas se editan en n8n, en el cuerpo JSON del nodo JEV: las de abajo son las de
 // fabrica, con las que se crea el nodo. Los NOMBRES de las preguntas y de las opciones (tipo,
-// sin_logo, accion, imagen, poster, comando, borrar...) no se cambian: los lee este codigo.
-// No hay filtro de spam: todo lo que no es un comando genera un poster.
+// sin_logo, accion, imagen, spam, poster, comando, borrar...) no se cambian: los lee este codigo.
+// Filtro de spam: lo que JEV marca como spam no se contesta. Un aviso o comunicado NO es spam: es poster.
 var PREGUNTAS_JEV = {
   tipo: {
     type: 'choice',
-    instructions: 'Un cliente le escribe por WhatsApp a un bot que crea posters publicitarios y los muestra en un carrusel de imagenes (pantallas de un negocio). Que quiere con este mensaje? Es comando solo si habla claramente de las imagenes que ya estan en el carrusel; en cualquier otro caso es poster.',
+    instructions: 'Un cliente le escribe por WhatsApp a un bot que crea posters publicitarios y los muestra en un carrusel de imagenes (pantallas de un negocio). Que es este mensaje? Es comando solo si habla claramente de las imagenes que ya estan en el carrusel. Un aviso o comunicado del negocio (horario, cierre, felicitacion, vacante) es poster, no spam. Si dudas entre poster y spam, es poster.',
     criteria: {
-      poster: 'Quiere un poster: nombra un producto, servicio, promocion, precio o evento, da un aviso o comunicado (horario, cierre, felicitacion, se solicita personal), pide un cambio a un poster, o cualquier otro mensaje. Ejemplos: "Tacos al pastor 3x50 solo hoy", "Cerrado el lunes por dia festivo".',
-      comando: 'Quiere administrar las imagenes que YA estan en el carrusel: verlas, borrar una, suspenderla, volver a mostrarla, programarla, cambiar cuanto dura, difuminar su fondo, o pide ayuda. Ejemplos: "ya no muestres la segunda", "quitame la 4", "que imagenes tengo?".'
+      poster: 'Quiere un poster: nombra un producto, servicio, promocion, precio o evento, da un aviso o comunicado (horario, cierre, felicitacion, se solicita personal) o pide un cambio a un poster. Ejemplos: "Tacos al pastor 3x50 solo hoy", "Cerrado el lunes por dia festivo".',
+      comando: 'Quiere administrar las imagenes que YA estan en el carrusel: verlas, borrar una, suspenderla, volver a mostrarla, programarla, cambiar cuanto dura, difuminar su fondo, o pide ayuda. Ejemplos: "ya no muestres la segunda", "quitame la 4", "que imagenes tengo?".',
+      spam: 'No hay nada que anunciar ni ordenar: saludos y charla ("hola", "gracias", "ok", "jaja"), cadenas, publicidad ajena, enlaces sueltos o mensajes sin sentido.'
     }
   },
   sin_logo: {
@@ -51,7 +52,8 @@ var PREGUNTAS_JEV = {
 };
 
 // Que tan seguro tiene que estar JEV (0 a 1) para que se le haga caso. Por debajo de esto un
-// "comando" se trata como poster, y el poster lleva logo.
+// "spam" o un "comando" se trata como poster (mejor un poster de mas que ignorar a un cliente),
+// y el poster lleva logo.
 var JEV_SEGURIDAD_MINIMA = 0.6;
 
 // Ordenes que JEV puede armar completas. Las que llevan datos (PROGRAMAR, DURACION) no:
@@ -59,7 +61,7 @@ var JEV_SEGURIDAD_MINIMA = 0.6;
 var JEV_ORDENES = { lista: 'LISTA', ayuda: 'AYUDA', borrar: 'BORRAR N', suspender: 'SUSPENDER N', activar: 'ACTIVAR N', difuminar: 'DIFUMINAR N SI', quitar_difuminado: 'DIFUMINAR N NO' };
 
 // `respuesta` = el JSON que contesto JEV: { answers: { tipo, sin_logo, accion, imagen }, usage }.
-// Devuelve { tipo: 'poster' | 'comando', logo: true | false, comando: '' } o null si
+// Devuelve { tipo: 'spam' | 'poster' | 'comando', logo: true | false, comando: '' } o null si
 // no se entiende (JEV fallo o contesto otra cosa): con null el flujo sigue como si no existiera.
 // `comando` es la orden en su forma normal ("SUSPENDER 2") o '' si JEV no pudo armarla.
 function leerClasificacion(respuesta) {
@@ -68,7 +70,7 @@ function leerClasificacion(respuesta) {
   var a = r && typeof r === 'object' ? r.answers : null;
   if (!a || typeof a !== 'object' || !a.tipo || typeof a.tipo !== 'object') { return null; }
   var tipo = a.tipo.choice;
-  if (tipo !== 'poster' && tipo !== 'comando') { return null; }
+  if (tipo !== 'spam' && tipo !== 'poster' && tipo !== 'comando') { return null; }
   var seguro = typeof a.tipo.confidence !== 'number' || a.tipo.confidence >= JEV_SEGURIDAD_MINIMA;
   if (!seguro) { tipo = 'poster'; }
   var sinLogo = !!a.sin_logo && typeof a.sin_logo.noul === 'number' && a.sin_logo.noul >= JEV_SEGURIDAD_MINIMA;

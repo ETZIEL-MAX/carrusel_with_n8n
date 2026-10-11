@@ -177,9 +177,10 @@ const jevResp = ({ tipo = 'poster', seguridad = 0.95, sinLogo = 0.02, accion = '
 check('póster con logo', J(leerClasificacion(jevResp())) === J({ tipo: 'poster', logo: true, comando: '' }));
 check('póster sin logo: solo si JEV está seguro', leerClasificacion(jevResp({ sinLogo: 0.93 })).logo === false && leerClasificacion(jevResp({ sinLogo: 0.6 })).logo === false && leerClasificacion(jevResp({ sinLogo: 0.59 })).logo === true);
 check('sin la pregunta del logo (o con un valor raro) lleva logo', [undefined, null, {}, { noul: 'si' }, { noul: null }].every((v) => { const r = jevResp(); r.answers.sin_logo = v; return leerClasificacion(r).logo === true; }));
-check('ya no hay filtro de spam: JEV solo distingue póster y comando', J(Object.keys(PREGUNTAS_JEV.tipo.criteria).sort()) === J(['comando', 'poster']) && /aviso o comunicado/.test(PREGUNTAS_JEV.tipo.criteria.poster) && leerClasificacion(jevResp({ tipo: 'spam' })) === null);
-check('un comando con poca seguridad se trata como póster', leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).tipo === 'poster' && leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).comando === '' && JEV_SEGURIDAD_MINIMA === 0.6);
-check('sin el dato de seguridad se le cree', (() => { const r = jevResp({ tipo: 'comando', accion: 'lista' }); delete r.answers.tipo.confidence; return leerClasificacion(r).comando === 'LISTA'; })());
+check('spam', J(leerClasificacion(jevResp({ tipo: 'spam' }))) === J({ tipo: 'spam', logo: true, comando: '' }));
+check('un aviso o comunicado es póster, no spam (lo dicen las preguntas de fábrica)', /aviso o comunicado/.test(PREGUNTAS_JEV.tipo.criteria.poster) && /es poster, no spam/.test(PREGUNTAS_JEV.tipo.instructions) && /Si dudas entre poster y spam, es poster/.test(PREGUNTAS_JEV.tipo.instructions) && !/aviso|comunicado/.test(PREGUNTAS_JEV.tipo.criteria.spam));
+check('spam o comando con poca seguridad se tratan como póster', leerClasificacion(jevResp({ tipo: 'spam', seguridad: 0.55 })).tipo === 'poster' && leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).tipo === 'poster' && leerClasificacion(jevResp({ tipo: 'comando', seguridad: 0.4, accion: 'borrar', imagen: 'imagen_2' })).comando === '' && JEV_SEGURIDAD_MINIMA === 0.6);
+check('sin el dato de seguridad se le cree', (() => { const r = jevResp({ tipo: 'spam' }); delete r.answers.tipo.confidence; return leerClasificacion(r).tipo === 'spam'; })());
 const orden = (accion, imagen) => leerClasificacion(jevResp({ tipo: 'comando', accion, imagen })).comando;
 check('comandos con número de imagen', orden('suspender', 'imagen_2') === 'SUSPENDER 2' && orden('activar', 'imagen_12') === 'ACTIVAR 12' && orden('borrar', 'imagen_4') === 'BORRAR 4' && orden('difuminar', 'imagen_3') === 'DIFUMINAR 3 SI' && orden('quitar_difuminado', 'imagen_3') === 'DIFUMINAR 3 NO');
 check('comandos sin número', orden('lista', 'ninguna') === 'LISTA' && orden('ayuda', 'imagen_3') === 'AYUDA');
@@ -191,8 +192,19 @@ check('los comandos que arma JEV los entiende el intérprete de siempre', (() =>
 })());
 check('acepta la respuesta como texto JSON', leerClasificacion(JSON.stringify(jevResp({ sinLogo: 0.9 }))).logo === false);
 check('error, respuesta vacía u otra forma -> null (el flujo sigue como antes)', [{ error: { message: 'timeout' } }, {}, { answers: {} }, { answers: { tipo: { choice: 'venta' } } }, { answers: { tipo: 'spam' } }, { answers: null }, '{"answers":', 'no se', '', [], 42, null, undefined].every((v) => leerClasificacion(v) === null));
-check('las preguntas de fábrica: cuatro, con los nombres y opciones que lee el código', J(Object.keys(PREGUNTAS_JEV)) === J(['tipo', 'sin_logo', 'accion', 'imagen']) && J(Object.keys(PREGUNTAS_JEV.tipo.criteria).sort()) === J(['comando', 'poster']) && PREGUNTAS_JEV.sin_logo.type === 'noul' && ['lista', 'ayuda', 'borrar', 'suspender', 'activar', 'difuminar', 'quitar_difuminado', 'otra'].every((k) => k in PREGUNTAS_JEV.accion.criteria) && 'ninguna' in PREGUNTAS_JEV.imagen.criteria && 'imagen_12' in PREGUNTAS_JEV.imagen.criteria);
+check('las preguntas de fábrica: cuatro, con los nombres y opciones que lee el código', J(Object.keys(PREGUNTAS_JEV)) === J(['tipo', 'sin_logo', 'accion', 'imagen']) && J(Object.keys(PREGUNTAS_JEV.tipo.criteria).sort()) === J(['comando', 'poster', 'spam']) && PREGUNTAS_JEV.sin_logo.type === 'noul' && ['lista', 'ayuda', 'borrar', 'suspender', 'activar', 'difuminar', 'quitar_difuminado', 'otra'].every((k) => k in PREGUNTAS_JEV.accion.criteria) && 'ninguna' in PREGUNTAS_JEV.imagen.criteria && 'imagen_12' in PREGUNTAS_JEV.imagen.criteria);
 check('las preguntas respetan los límites de la API de JEV', Object.keys(PREGUNTAS_JEV).length <= 8 && Object.values(PREGUNTAS_JEV).every((q) => q.instructions.length <= 1800 && JSON.stringify(q.criteria || {}).length <= 2000 && (q.type !== 'choice' || (Object.keys(q.criteria).length >= 2 && Object.keys(q.criteria).length <= 20))));
+
+console.log('\n== n8n/espera.js ==');
+const { juntarMensajes, ESPERA_VIGENCIA_MS } = loadSnippet('n8n/espera.js', ['juntarMensajes', 'ESPERA_VIGENCIA_MS']);
+const T0 = Date.parse('2026-10-10T18:00:00Z');
+const fila = (id, mensaje_id, texto, hace = 3000) => ({ id, mensaje_id, texto, numero: '8110306098', createdAt: new Date(T0 - hace).toISOString() });
+check('un solo mensaje: sigue con su texto', J(juntarMensajes([fila(1, 'A', 'Tacos 3x50')], 'A', 'Tacos 3x50', T0)) === J({ seguir: true, texto: 'Tacos 3x50', mensajes: 1 }));
+check('llegó otro después: este se retira', J(juntarMensajes([fila(1, 'A', 'Tacos 3x50'), fila(2, 'B', 'solo hoy')], 'A', 'Tacos 3x50', T0)) === J({ seguir: false }));
+check('el último junta el texto de todos, en orden de llegada', J(juntarMensajes([fila(3, 'C', 'sin logo'), fila(1, 'A', 'Tacos 3x50'), fila(2, 'B', 'solo hoy')], 'C', 'sin logo', T0)) === J({ seguir: true, texto: 'Tacos 3x50\nsolo hoy\nsin logo', mensajes: 3 }));
+check('una fila vieja (ejecución que falló) no se junta ni bloquea', J(juntarMensajes([fila(1, 'VIEJA', 'pizza', ESPERA_VIGENCIA_MS + 1000), fila(2, 'A', 'Tacos')], 'A', 'Tacos', T0)) === J({ seguir: true, texto: 'Tacos', mensajes: 1 }) && ESPERA_VIGENCIA_MS >= 30000);
+check('si la tabla falla o mi fila ya no está, contesto solo con lo mío', [[], null, undefined, [{ error: 'no existe la tabla' }], [fila(5, 'OTRO', 'x')]].every((f) => J(juntarMensajes(f, 'A', 'Tacos', T0)) === J({ seguir: true, texto: 'Tacos', mensajes: 1 })));
+check('los mensajes vacíos no meten renglones en blanco', juntarMensajes([fila(1, 'A', 'Tacos'), fila(2, 'B', '   '), fila(3, 'C', '$50')], 'C', '$50', T0).texto === 'Tacos\n$50');
 
 console.log('\n== n8n/comandos.js ==');
 const { interpretarComando } = loadSnippet('n8n/comandos.js', ['interpretarComando']);
@@ -256,14 +268,15 @@ check('programación en texto: fechas', textoProgramacion({ days: null, from: '2
 check('programación en texto: días y fechas, y año si no es el actual', textoProgramacion({ days: [5], from: '2026-12-15', to: '2027-01-10' }, 2026) === 'solo vie · 15 dic – 10 ene 2027' && textoProgramacion(null, 2026) === '' && textoProgramacion({ days: null, from: '2026-10-17', to: '2026-10-17' }, 2026) === 'solo el 17 oct');
 
 let rp = resp({ accion: 'list' }, LISTA3);
-check('LISTA: una imagen normal se ve como antes', rp.texto.includes('#1 · 8 s (por defecto)\n' + WEB + '/uploads/a.webp') && rp.confirmar === false, rp.texto.slice(0, 160));
-check('LISTA: marca la suspendida y el difuminado', rp.texto.includes('#2 · 20 s · SUSPENDIDA · difuminado'), rp.texto);
-check('LISTA: muestra la programación y si hoy no sale', rp.texto.includes('#3 · 8 s (por defecto) · solo vie · 17 oct – 23 nov · hoy no se muestra\nhttps://x.test/c.jpg'), rp.texto);
-check('LISTA: encabezado y recordatorio de comandos', rp.texto.startsWith('Imagenes del carrusel: 3 (por defecto 8 s)') && /SUSPENDER 3/.test(rp.texto) && /AYUDA/.test(rp.texto));
-check('LISTA vacía', resp({ accion: 'list' }, { success: true, data: { count: 0, slideDuration: 8, images: [] } }).texto === 'El carrusel esta vacio.');
+check('LISTA: una imagen normal se ve como antes', rp.texto.includes('*#1* · 8 s (por defecto)\n' + WEB + '/uploads/a.webp') && rp.confirmar === false, rp.texto.slice(0, 160));
+check('LISTA: marca la suspendida y el difuminado', rp.texto.includes('*#2* · 20 s · ⏸️ *SUSPENDIDA* · 🌫️ difuminado'), rp.texto);
+check('LISTA: muestra la programación y si hoy no sale', rp.texto.includes('*#3* · 8 s (por defecto) · 📅 solo vie · 17 oct – 23 nov · hoy no se muestra\nhttps://x.test/c.jpg'), rp.texto);
+check('LISTA: encabezado y recordatorio de comandos', rp.texto.startsWith('🖼️ *Imagenes del carrusel: 3* (por defecto 8 s)') && /⏸️ \*SUSPENDER 3\*/.test(rp.texto) && /🗑️ \*BORRAR 3\*/.test(rp.texto) && /❓ \*AYUDA\*/.test(rp.texto));
+check('las negritas de WhatsApp quedan cerradas en cada renglón', rp.texto.split('\n').every((l) => (l.match(/\*/g) || []).length % 2 === 0));
+check('LISTA vacía', resp({ accion: 'list' }, { success: true, data: { count: 0, slideDuration: 8, images: [] } }).texto === '📭 El carrusel esta vacio.');
 
 rp = resp({ accion: 'delete', index: 2 }, LISTA3);
-check('BORRAR: pide confirmar y borra por id', rp.confirmar === true && rp.index === 2 && rp.bodyToSign === '{"action":"delete","id":"b"}' && rp.fotoUrl === WEB + '/uploads/b.webp' && rp.texto.startsWith('¿Borrar la imagen #2'));
+check('BORRAR: pide confirmar y borra por id', rp.confirmar === true && rp.index === 2 && rp.bodyToSign === '{"action":"delete","id":"b"}' && rp.fotoUrl === WEB + '/uploads/b.webp' && rp.texto.startsWith('🗑️ *¿Borrar la imagen #2 del carrusel?* No se puede deshacer.'));
 check('BORRAR una que no existe', /No existe la imagen #9; hay 3/.test(resp({ accion: 'delete', index: 9 }, LISTA3).texto) && resp({ accion: 'delete', index: 9 }, LISTA3).confirmar === false);
 check('BORRAR hecho', resp({ accion: 'delete' }, { success: true, data: { index: 2, count: 2 } }).texto === '🗑️ Borrada la imagen #2. Quedan 2 en el carrusel.');
 check('DURACION', resp({ accion: 'duration' }, { success: true, data: { index: 3, duration: 20 } }).texto === '⏱️ Listo: la imagen #3 ahora dura 20 s.' && resp({ accion: 'duration' }, { success: true, data: { index: 'all', slideDuration: 12 } }).texto === '⏱️ Listo: las imagenes sin duracion propia ahora duran 12 s.');
@@ -293,14 +306,14 @@ if (!existsSync(exportPath)) {
   console.log('SKIP  no existe ' + exportPath);
 } else {
   const { patchWorkflow } = await import('./n8n-patch-flujo.mjs');
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas', 'espera'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const copia = JSON.parse(readFileSync(exportPath, 'utf8'));
   const antes = JSON.stringify(copia);
   const out = patchWorkflow(copia, snippets);
   const node = (n) => out.nodes.find((x) => x.name === n);
   const next = (n) => (out.connections[n]?.main?.[0] || []).map((x) => x.node);
 
-  check('87 nodos y 12 notas', out.nodes.length === 99, out.nodes.length);
+  check('97 nodos y 12 notas', out.nodes.length === 109, out.nodes.length);
   check('nombres de nodo sin repetir', new Set(out.nodes.map((n) => n.name)).size === out.nodes.length);
   check('idempotente', JSON.stringify(patchWorkflow(out, snippets)) === JSON.stringify(out));
   check('no muta la entrada', JSON.stringify(copia) === antes);
@@ -513,8 +526,10 @@ if (!existsSync(exportPath)) {
       [{ accion: 'list' }, {}],
     ];
     const cambia = [];
-    for (const [c, r] of casos) { if (J(await responder(copia, c, r)) !== J(await responder(out, c, r))) cambia.push(J(c)); }
-    check('Armar respuesta: ' + casos.length + ' respuestas de antes dan exactamente lo mismo que el nodo original', cambia.length === 0, cambia.join(' | '));
+    // Lo único que cambia es la decoración: el emoji con el que empiezan dos de ellas y las negritas.
+    const sinEmoji = (o) => ({ ...o, texto: o.texto.replace(/^(?:🗑️ (?=\*¿Borrar)|📭 )/, '').replace(/\*/g, '') });
+    for (const [c, r] of casos) { if (J(await responder(copia, c, r)) !== J(sinEmoji(await responder(out, c, r)))) cambia.push(J(c)); }
+    check('Armar respuesta: ' + casos.length + ' respuestas de antes dicen lo mismo que el nodo original (salvo emojis y negritas)', cambia.length === 0, cambia.join(' | '));
   }
 
   // ===== JEV (clasificador), póster sin logo, instrucciones editables y lienzo =====
@@ -536,7 +551,7 @@ if (!existsSync(exportPath)) {
   j = (await run('Firmar consumo', { token: 'crt_abc', input: jevResp(), executionId: '77', runIndex: 0 }))[0].json;
   check('Firmar consumo: reporta los tokens de JEV', J(JSON.parse(j.body)) === J({ eventId: '77-jev-0', kind: 'text', model: 'jev-latest', tokens: { input_tokens: 412, output_tokens: 18 } }) && j.signature === ref('crt_abc', j.timestamp + '.' + j.body), j.body);
   check('Firmar consumo: si JEV falló no reporta nada', (await run('Firmar consumo', { token: 'crt_abc', input: { error: { message: 'timeout' } } })).length === 0);
-  check('sin filtro de spam: Detectar ruta -> Es foto, y no existen Es spam ni Mensaje ignorado', next('Detectar ruta').join() === 'Es foto' && !names.includes('Es spam') && !names.includes('Mensaje ignorado') && !out.connections['Es spam']);
+  check('filtro de spam: Detectar ruta -> Es spam -> (Mensaje ignorado | Es foto)', next('Detectar ruta').join() === 'Es spam' && salida('Es spam', 0).join() === 'Mensaje ignorado' && salida('Es spam', 1).join() === 'Es foto' && node('Mensaje ignorado').type === 'n8n-nodes-base.noOp' && !out.connections['Mensaje ignorado']);
   check('Detectar ruta: lleva clasificador.js y comandos.js', code('Detectar ruta').startsWith(snippets.clasificador) && code('Detectar ruta').includes(snippets.comandos) && /leerClasificacion\(/.test(code('Detectar ruta').slice(snippets.clasificador.length)));
 
   const AHORA2 = { year: 2026, month: 10, day: 9, toFormat: () => '20261009-120000', setZone() { return this; } };
@@ -550,8 +565,10 @@ if (!existsSync(exportPath)) {
     noEjecutados: jev === undefined ? ['JEV', 'Transcribir audio'] : ['Transcribir audio'],
   }))[0].json;
 
-  let dj = await rutaCon(out, 'hola buenas tardes', jevResp());
-  check('un saludo ya no se ignora: sigue al póster (el director decide si hay algo que anunciar)', dj.ruta === 'poster' && dj.jev === 'poster');
+  let dj = await rutaCon(out, 'hola buenas tardes', jevResp({ tipo: 'spam' }));
+  check('JEV dice spam -> ruta spam (no se contesta)', dj.ruta === 'spam' && dj.jev === 'spam');
+  dj = await rutaCon(out, 'oferta increible', jevResp({ tipo: 'spam', seguridad: 0.5 }));
+  check('JEV dice spam sin estar seguro -> se hace el póster', dj.ruta === 'poster' && dj.con_logo === true);
   dj = await rutaCon(out, 'Cerrado el lunes por dia festivo', jevResp());
   check('un aviso genera póster', dj.ruta === 'poster' && dj.con_logo === true && dj.texto === 'Cerrado el lunes por dia festivo');
   dj = await rutaCon(out, 'Hamburguesa doble $89 sin logo', jevResp({ sinLogo: 0.97 }));
@@ -568,20 +585,72 @@ if (!existsSync(exportPath)) {
   check('una orden que JEV no puede armar (programar en frase libre) -> ayuda', dj.ruta === 'ayuda');
   dj = await rutaCon(out, 'programar 3 sabado domingo', jevResp({ tipo: 'comando', accion: 'otra', imagen: 'imagen_3' }));
   check('PROGRAMAR escrito en su forma normal sigue funcionando con JEV', dj.ruta === 'comando' && dj.bodyToSign === '{"action":"schedule","index":3,"schedule":{"days":[0,6],"from":null,"to":null}}', dj.bodyToSign);
-  dj = await rutaCon(out, 'Suspender 2', jevResp());
-  check('un comando escrito tal cual gana aunque JEV diga póster', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2);
+  dj = await rutaCon(out, 'Suspender 2', jevResp({ tipo: 'spam' }));
+  check('un comando escrito tal cual gana aunque JEV diga spam', dj.ruta === 'comando' && dj.accion === 'suspend' && dj.index === 2);
   dj = await rutaCon(out, 'borrar 3', jevResp({ tipo: 'comando', accion: 'suspender', imagen: 'imagen_9' }));
   check('un comando escrito tal cual gana aunque JEV entienda otro', dj.accion === 'delete' && dj.index === 3);
-  dj = await rutaCon(out, 'ayuda', jevResp());
-  check('AYUDA escrita tal cual va a la ayuda aunque JEV diga póster', dj.ruta === 'ayuda');
+  dj = await rutaCon(out, 'ayuda', jevResp({ tipo: 'spam' }));
+  check('AYUDA escrita tal cual no se trata como spam', dj.ruta === 'ayuda');
   const sinJev = [];
   for (const [t, jev] of [['hola', undefined], ['Tacos al pastor 3x50', { error: { message: 'timeout' } }], ['Tacos al pastor 3x50', { message: 'insufficient_credits' }], ['Tacos 3x50', { answers: { tipo: { choice: 'otra cosa' } } }], ['lista', undefined]]) {
     const a = await rutaCon(out, t, jev), b = await rutaCon(out, t, undefined);
-    if (a.jev !== '' || a.con_logo !== true || J(a) !== J(b)) sinJev.push(t + ' / ' + J(jev));
+    if (a.jev !== '' || a.con_logo !== true || J(a) !== J(b) || a.ruta === 'spam') sinJev.push(t + ' / ' + J(jev));
   }
   check('si JEV no corre, falla o contesta algo raro, todo sigue como antes (póster con logo, comandos exactos)', sinJev.length === 0, sinJev.join(' | '));
-  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', image: { id: 'IMG1', caption: 'tacos', mime_type: 'image/jpeg' } }] }, 'Traer settings': { data: { googleDriveFolder: 'ABC' } }, JEV: jevResp({ tipo: 'comando', accion: 'lista' }) } }))[0].json;
+  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', image: { id: 'IMG1', caption: 'tacos', mime_type: 'image/jpeg' } }] }, 'Traer settings': { data: { googleDriveFolder: 'ABC' } }, JEV: jevResp({ tipo: 'spam' }) } }))[0].json;
   check('una foto va a Drive diga lo que diga JEV', dj.ruta === 'foto' && dj.fileName === 'tacos.jpg');
+
+  // Espera de 5 segundos
+  const cond1 = (n) => node(n).parameters.conditions.conditions[0];
+  check('Solo mi numero -> Es texto -> (Anotar mensaje | Es audio)', salida('Solo mi numero', 0).join() === 'Es texto' && salida('Es texto', 0).join() === 'Anotar mensaje' && salida('Es texto', 1).join() === 'Es audio' && /text\?\.body/.test(cond1('Es texto').leftValue) && cond1('Es texto').operator.operation === 'notEmpty');
+  check('Anotar mensaje -> Esperar 5 segundos -> Leer mensajes -> Juntar mensajes -> Soy el ultimo', next('Anotar mensaje').join() === 'Esperar 5 segundos' && next('Esperar 5 segundos').join() === 'Leer mensajes' && next('Leer mensajes').join() === 'Juntar mensajes' && next('Juntar mensajes').join() === 'Soy el ultimo');
+  check('la espera es de 5 segundos', node('Esperar 5 segundos').type === 'n8n-nodes-base.wait' && node('Esperar 5 segundos').parameters.amount === 5 && node('Esperar 5 segundos').parameters.unit === 'seconds');
+  check('Soy el ultimo -> (Limpiar espera, Es audio | Mensaje juntado)', salida('Soy el ultimo', 0).slice().sort().join() === 'Es audio,Limpiar espera' && salida('Soy el ultimo', 1).join() === 'Mensaje juntado' && !out.connections['Limpiar espera'] && !out.connections['Mensaje juntado'] && node('Mensaje juntado').type === 'n8n-nodes-base.noOp');
+  check('la espera se vacía antes de seguir con el mensaje (va arriba de Es audio)', node('Limpiar espera').position[1] < node('Es audio').position[1]);
+  const tablas = ['Anotar mensaje', 'Leer mensajes', 'Limpiar espera'].map(node);
+  check('los tres nodos usan la tabla whatsapp_espera y no detienen el flujo si falla', tablas.every((n) => n.type === 'n8n-nodes-base.dataTable' && n.parameters.dataTableId.value === '2FRqWT4ocHgeLGHM' && n.onError === 'continueRegularOutput' && n.alwaysOutputData === true) && tablas.map((n) => n.parameters.operation).join() === 'insert,get,deleteRows');
+  check('se anota y se busca por los últimos 10 dígitos del número', J(Object.keys(node('Anotar mensaje').parameters.columns.value)) === J(['numero', 'mensaje_id', 'texto']) && /slice\(-10\)/.test(node('Anotar mensaje').parameters.columns.value.numero) && [node('Leer mensajes'), node('Limpiar espera')].every((n) => n.parameters.filters.conditions.length === 1 && n.parameters.filters.conditions[0].keyName === 'numero' && n.parameters.filters.conditions[0].keyValue === node('Anotar mensaje').parameters.columns.value.numero) && node('Leer mensajes').parameters.returnAll === true);
+  check('Juntar mensajes: lleva n8n/espera.js', code('Juntar mensajes').startsWith(snippets.espera.replace(/\s+$/, '')) && /juntarMensajes\(filas, miId/.test(code('Juntar mensajes').slice(snippets.espera.length - 5)));
+  const juntar = (filas, id, texto) => new AsyncFunction('$', '$input', '$execution', code('Juntar mensajes'))(
+    () => { const item = { json: { messages: [{ id, from: '5218110306098', text: { body: texto } }] } }; return { first: () => item }; },
+    { all: () => filas.map((json) => ({ json })) }, { id: '9' });
+  const ahora = () => new Date().toISOString();
+  let jm = (await juntar([{ id: 1, mensaje_id: 'wamid.A', texto: 'Tacos 3x50', createdAt: ahora() }, { id: 2, mensaje_id: 'wamid.B', texto: 'solo hoy', createdAt: ahora() }], 'wamid.A', 'Tacos 3x50'))[0].json;
+  check('Juntar mensajes: el primero de dos se retira', jm.seguir === false);
+  jm = (await juntar([{ id: 1, mensaje_id: 'wamid.A', texto: 'Tacos 3x50', createdAt: ahora() }, { id: 2, mensaje_id: 'wamid.B', texto: 'solo hoy', createdAt: ahora() }], 'wamid.B', 'solo hoy'))[0].json;
+  check('Juntar mensajes: el último sigue con el texto de los dos', jm.seguir === true && jm.texto === 'Tacos 3x50\nsolo hoy' && jm.mensajes === 2);
+  jm = (await juntar([{ error: 'tabla no disponible' }], 'wamid.A', 'Tacos 3x50'))[0].json;
+  check('Juntar mensajes: si la tabla falla, el mensaje sigue solo', jm.seguir === true && jm.texto === 'Tacos 3x50');
+  check('Soy el ultimo deja pasar salvo que haya un mensaje más nuevo', cond1('Soy el ultimo').leftValue === '={{ $json.seguir !== false }}');
+  const juntos = { texto: 'Tacos 3x50\nsolo hoy\nsin logo', seguir: true, mensajes: 3 };
+  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', text: { body: 'sin logo' } }] }, 'Juntar mensajes': juntos, JEV: jevResp({ sinLogo: 0.95 }) }, noEjecutados: ['Transcribir audio'] }))[0].json;
+  check('Detectar ruta usa el texto de todos los mensajes juntos', dj.texto === juntos.texto && dj.ruta === 'poster' && dj.con_logo === false, dj.texto);
+  dj = (await correr(code('Detectar ruta'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', text: { body: 'lista' } }] } }, noEjecutados: ['Juntar mensajes', 'JEV', 'Transcribir audio'] }))[0].json;
+  check('Detectar ruta sin espera (no corrió Juntar mensajes) lee el mensaje como siempre', dj.ruta === 'comando' && dj.accion === 'list');
+  const icJ = (await correr(code('Init contexto'), { nodes: { 'WhatsApp Trigger': { messages: [{ from: '521', text: { body: 'sin logo' } }] }, 'Juntar mensajes': juntos, 'Traer settings': { data: {} } }, noEjecutados: ['Transcribir audio'] }))[0].json;
+  check('Init contexto usa el texto de todos los mensajes juntos', icJ.texto === juntos.texto);
+  check('Hay texto y JEV leen primero el texto juntado', /^=\{\{ String\(\(\$\('Juntar mensajes'\)\.isExecuted \? \$\('Juntar mensajes'\)\.first\(\)\.json\.texto : ''\) \|\| /.test(cond1('Hay texto').leftValue) && /Juntar mensajes/.test(jevNode.parameters.jsonBody));
+
+  // El cuerpo de JEV que ya está en n8n
+  const viejoState = '  "state": {{ JSON.stringify(\'Mensaje del cliente: \' + String($(\'WhatsApp Trigger\').first().json.messages?.[0]?.text?.body || \'\').trim()) }},';
+  const conState = JSON.parse(JSON.stringify(out));
+  const jn = (wf) => wf.nodes.find((x) => x.name === 'JEV');
+  jn(conState).parameters.jsonBody = jn(conState).parameters.jsonBody.replace(/^ *"state":.*$/m, viejoState).replace('Que es este mensaje?', 'MI PREGUNTA');
+  let jb = jn(patchWorkflow(conState, snippets)).parameters.jsonBody;
+  check('JEV: se refresca la línea "state" (lee los mensajes juntados) sin pisar las preguntas editadas', /Juntar mensajes/.test(jb) && /MI PREGUNTA/.test(jb) && (jb.match(/"state"/g) || []).length === 1);
+  const sinSpam = JSON.parse(JSON.stringify(out));
+  jn(sinSpam).parameters.jsonBody = jn(sinSpam).parameters.jsonBody.replace(/,\s*"spam": "[^"\n]*(?:\\"[^"\n]*)*"/, '');
+  jb = jn(patchWorkflow(sinSpam, snippets)).parameters.jsonBody;
+  check('JEV: si a las preguntas guardadas les falta la opción spam, vuelven las de fábrica', !/"spam"/.test(jn(sinSpam).parameters.jsonBody) && jb === jevNode.parameters.jsonBody);
+
+  // Emojis en las opciones
+  const emoji = /^(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})/u;
+  check('AYUDA: cada opción empieza con un emoji', ayuda.split('\n').filter(Boolean).every((l) => emoji.test(l)) && /📋 \*LISTA\*/.test(ayuda) && /🗑️ \*BORRAR 3\*/.test(ayuda) && /⏸️ \*SUSPENDER 3\*/.test(ayuda) && !/•/.test(ayuda), ayuda.split('\n').filter((l) => l && !emoji.test(l)).join(' | '));
+  check('AYUDA: cada opción va en negritas y las negritas quedan cerradas', ayuda.split('\n').filter(Boolean).every((l) => /\*[^*\n]+\*/.test(l) && (l.match(/\*/g) || []).length % 2 === 0));
+  check('vista previa: las opciones PUBLICAR / cambiar llevan emoji y negritas', /✅ \*PUBLICAR\*/.test(code('Armar vista')) && /✏️ \*dime que cambiar\*/.test(code('Armar vista')) && /✅ \*PUBLICAR\* — lo subo al carrusel\n✏️ \*O dime que cambiar\*/.test(node('Esperar respuesta').parameters.message) && node('Esperar respuesta').parameters.options.messageButtonLabel === '✍️ Responder' && node('Esperar respuesta').parameters.responseType === 'freeText' && node('Esperar respuesta').parameters.options.appendAttribution === false);
+  check('borrar: los botones llevan emoji y caben en WhatsApp (20 caracteres)', J(node('Confirmar borrado').parameters.approvalOptions.values) === J({ approvalType: 'double', approveLabel: '🗑️ Borrar', disapproveLabel: '❌ Cancelar' }) && node('Confirmar borrado').parameters.options.limitWaitTime.values.resumeAmount === 30);
+  const pub = async (t) => (await correr(code('Normalizar respuesta'), { input: { data: { text: t } } }))[0].json.decision;
+  check('contestar "✅ PUBLICAR" (con el emoji) sigue publicando', (await pub('✅ PUBLICAR')) === 'publicar' && (await pub('*PUBLICAR*')) === 'publicar' && (await pub('publicar')) === 'publicar' && (await pub('✏️ ponle fondo rojo')) === 'cambiar');
 
   // Póster sin logo
   check('Fijar foto -> Con logo; sí: el camino de siempre; no: solo ajustar el tamaño', next('Fijar foto').join() === 'Con logo' && salida('Con logo', 0).slice().sort().join() === 'Descargar logo,Optimizar imagen' && salida('Con logo', 1).join() === 'Optimizar imagen sin logo' && next('Optimizar imagen sin logo').join() === 'Subir imagen compuesta');
@@ -609,7 +678,7 @@ if (!existsSync(exportPath)) {
   // Lo que el usuario edita en n8n no se pisa al volver a aplicar el script
   const tocado = JSON.parse(JSON.stringify(out));
   const tn = (n) => tocado.nodes.find((x) => x.name === n);
-  tn('JEV').parameters.jsonBody = tn('JEV').parameters.jsonBody.replace('Que quiere con este mensaje?', 'MI PREGUNTA');
+  tn('JEV').parameters.jsonBody = tn('JEV').parameters.jsonBody.replace('Que es este mensaje?', 'MI PREGUNTA');
   tn('JEV').parameters.headerParameters.parameters.find((h) => h.name === 'Authorization').value = 'Bearer llave-de-prueba';
   tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'reglas').value = 'MIS REGLAS';
   tn('Instrucciones del director').parameters.assignments.assignments.find((a) => a.name === 'sin_logo').value = '';

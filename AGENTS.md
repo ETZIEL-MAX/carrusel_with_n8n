@@ -174,6 +174,7 @@ scripts/migrate-storage.mjs  register pre-quota files (never deletes)
 scripts/server.mjs  standalone local/Docker server
 scripts/test-e2e.mjs  end-to-end test (npm test)
 n8n/firma.js, consumo.js, formato.js, prompt.js, comandos.js, respuestas.js  source of the n8n Code-node snippets (signing, usage report, poster size and logo zone, prompt messages, chat command parser and replies); no import/export
+n8n/espera.js  5-second debounce: text messages sent in a row are stored in the n8n table whatsapp_espera and answered once, 5 s after the last one, with all their text joined
 scripts/n8n-patch-flujo.mjs  patches an exported n8n workflow JSON with those snippets
 n8n/clasificador.js  JEV (HTTP call to jevmodel.org/v1/systemone): default questions + parser of its answer (spam / poster with or without logo / command); the API key lives only in n8n
 n8n/prompt.js  default texts of the "Instrucciones del director" node + armarMensajes

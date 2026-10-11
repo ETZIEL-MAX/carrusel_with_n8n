@@ -6,7 +6,8 @@
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
 //   - los comandos del chat (suspender, programar, difuminar...) salen de n8n/comandos.js y n8n/respuestas.js
-//   - JEV (una llamada HTTP a jevmodel.org) clasifica el mensaje: póster con o sin logo, o comando (n8n/clasificador.js)
+//   - JEV (una llamada HTTP a jevmodel.org) clasifica el mensaje: spam, póster con o sin logo, o comando (n8n/clasificador.js)
+//   - espera de 5 segundos: los mensajes de texto seguidos se juntan y se contesta una sola vez (n8n/espera.js)
 //   - las instrucciones del que redacta el prompt se editan en el nodo "Instrucciones del director"
 //   - los nodos se acomodan en 12 secciones con su nota (scripts/n8n-lienzo.mjs)
 // Lo que el usuario edita en n8n no se pisa: las preguntas (cuerpo JSON) y la llave del nodo "JEV", y los
@@ -23,6 +24,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SIGN_NODES = ['Firmar settings', 'Firmar comando', 'Subir imagen compuesta', 'Firmar webhook'];
 const HTTP_NODES = ['Traer settings', 'Llamar manage', 'Subir imagen compuesta - HTTP', 'Publicar en carrusel'];
 const TABLE_ID = 'l7BmjGQTMBUFwDoB'; // whatsapp_numeros
+const ESPERA_TABLE_ID = '2FRqWT4ocHgeLGHM'; // whatsapp_espera (numero, mensaje_id, texto)
+const ESPERA_SEGUNDOS = 5; // cuánto se espera después del último mensaje antes de contestar
 const TOKEN_LINE = "const token = String($('Variables').first().json.token || '');";
 const TIMESTAMP_HEADER = { name: 'X-Webhook-Timestamp', value: '={{ $json.timestamp }}' };
 
@@ -91,28 +94,58 @@ const DETECTAR_COMANDOS = [
   '    if (deJev) { cmd = deJev; }',
   "    else if (!cmd) { cmd = interpretarComando('ayuda', hoy); }",
   '  } else if (!cmd) {',
-  '    out.con_logo = jev.logo;',
+  "    if (jev.tipo === 'spam') { out.ruta = 'spam'; }",
+  '    else { out.con_logo = jev.logo; }',
   '  }',
   '}',
   'if (cmd) { out.ruta = cmd.ruta; out.accion = cmd.accion; out.index = cmd.index; out.duracion = cmd.duracion; out.bodyToSign = cmd.bodyToSign; }',
   'return [{ json: out }];',
 ].join('\n');
 
-// Texto del mensaje (escrito o audio transcrito): lo que lee JEV. Una foto no trae texto aqui.
-const TEXTO_EXPR = "String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || ($('Transcribir audio').isExecuted ? $('Transcribir audio').first().json.choices?.[0]?.message?.content : '') || '').trim()";
+// Texto del mensaje (los mensajes juntados, el escrito o el audio transcrito): lo que lee JEV. Una foto no trae texto aqui.
+const TEXTO_EXPR = "String(($('Juntar mensajes').isExecuted ? $('Juntar mensajes').first().json.texto : '') || $('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || ($('Transcribir audio').isExecuted ? $('Transcribir audio').first().json.choices?.[0]?.message?.content : '') || '').trim()";
 const TEXTO_MENSAJE = '={{ ' + TEXTO_EXPR + ' }}';
+// Espera de 5 segundos (n8n/espera.js): datos del mensaje con los que se anota y se busca en whatsapp_espera.
+const ESPERA_NUMERO = "={{ String($('WhatsApp Trigger').first().json.messages?.[0]?.from ?? '').replace(/\\D/g, '').slice(-10) }}";
+const ESPERA_MENSAJE_ID = "String($('WhatsApp Trigger').first().json.messages?.[0]?.id || 'ejecucion-' + $execution.id)";
+const ESPERA_TABLA = { __rl: true, mode: 'id', value: ESPERA_TABLE_ID, cachedResultName: 'whatsapp_espera' };
+const ESPERA_FILTRO = { conditions: [{ keyName: 'numero', condition: 'eq', keyValue: ESPERA_NUMERO }] };
+const JUNTAR_MENSAJES = [
+  '// Filas de este numero en whatsapp_espera, 5 segundos despues de anotar este mensaje.',
+  'var filas = [];',
+  'try { filas = $input.all().map(function (i) { return i.json || {}; }); } catch (e) {}',
+  'var m = {};',
+  "try { m = $('WhatsApp Trigger').first().json.messages[0] || {}; } catch (e) {}",
+  "var miId = String(m.id || 'ejecucion-' + $execution.id);",
+  "return [{ json: juntarMensajes(filas, miId, (m.text && m.text.body) || '') }];",
+].join('\n');
+// En los nodos Code el texto juntado va primero; si no hubo espera (audio, foto), el de siempre.
+const TEXTO_LINEA = "try { texto = (m.text && m.text.body) || ''; } catch (e) {}";
+const TEXTO_JUNTADO = "try { texto = String($('Juntar mensajes').first().json.texto || ''); } catch (e) {}\nif (!texto) { " + TEXTO_LINEA + ' }';
+function patchTexto(code, nodeName) {
+  if (code.includes("$('Juntar mensajes')")) return code;
+  return replaceOnce(code, /try \{ texto = \(m\.text && m\.text\.body\) \|\| ''; \} catch \(e\) \{\}/, () => TEXTO_JUNTADO, nodeName, 'lectura del texto del mensaje');
+}
 const JEV_URL = 'https://jevmodel.org/v1/systemone';
 const JEV_SIN_LLAVE = 'Bearer PEGA_AQUI_LA_LLAVE_DE_JEV'; // la llave real solo vive en n8n, nunca en el repo
 // Cuerpo de la peticion a JEV: una plantilla de n8n (JSON con una expresion para el mensaje).
 // Va con sangria para que se pueda editar en n8n y para que nunca queden dos llaves juntas,
 // que n8n tomaria por una expresion.
+const ESTADO_JEV = `  "state": {{ JSON.stringify('Mensaje del cliente: ' + ${TEXTO_EXPR}) }},`;
 const cuerpoJev = (preguntas) => [
   '={',
   '  "model": "jev-latest",',
-  `  "state": {{ JSON.stringify('Mensaje del cliente: ' + ${TEXTO_EXPR}) }},`,
+  ESTADO_JEV,
   '  "questions": ' + JSON.stringify(preguntas, null, 2).split('\n').join('\n  '),
   '}',
 ].join('\n');
+// El cuerpo que ya está en n8n se respeta (lo edita el usuario), con dos excepciones: la línea
+// "state" es de este script (de dónde sale el mensaje), y si a las preguntas les falta la opción
+// `spam` el filtro no puede funcionar, así que vuelven las de fábrica.
+function cuerpoJevVigente(previo, preguntas) {
+  if (typeof previo !== 'string' || !previo || !/"spam"\s*:/.test(previo)) return cuerpoJev(preguntas);
+  return previo.replace(/^[ \t]*"state":[ \t]*\{\{.*\}\},[ \t]*$/m, () => ESTADO_JEV);
+}
 const INIT_LOGO = [
   '// Con logo o sin logo: lo decide JEV (sale de "Detectar ruta"). Si no dijo nada, con logo.',
   'var llevaLogo = true;',
@@ -145,22 +178,31 @@ const ARMAR_RESPUESTA = [
   "return [{ json: armarRespuesta(cmd, r, 'https://carrusel.etziel.com', anio) }];",
 ].join('\n');
 const AYUDA = [
-  'Comandos del carrusel:',
+  '🤖 *Comandos del carrusel*',
   '',
-  '• LISTA — ver las imagenes, su numero y su estado',
-  '• DURACION 3 20 — la imagen #3 dura 20 segundos',
-  '• DURACION TODAS 12 — duracion por defecto de todas',
-  '• SUSPENDER 3 — deja de mostrarla sin borrarla',
-  '• ACTIVAR 3 — vuelve a mostrarla',
-  '• PROGRAMAR 3 VIERNES — solo ese dia (o LUNES A VIERNES)',
-  '• PROGRAMAR 3 DEL 17 DE OCT AL 23 DE NOV — solo entre esas fechas',
-  '• PROGRAMAR 3 SIEMPRE — quita la programacion',
-  '• DIFUMINAR 3 SI / DIFUMINAR 3 NO — fondo difuminado o negro',
-  '• BORRAR 3 — borrar la imagen #3 (pide confirmacion)',
+  '📋 *LISTA* — ver las imagenes, su numero y su estado',
+  '⏱️ *DURACION 3 20* — la imagen #3 dura 20 segundos',
+  '⏱️ *DURACION TODAS 12* — duracion por defecto de todas',
+  '⏸️ *SUSPENDER 3* — deja de mostrarla sin borrarla',
+  '▶️ *ACTIVAR 3* — vuelve a mostrarla',
+  '📅 *PROGRAMAR 3 VIERNES* — solo ese dia (o *LUNES A VIERNES*)',
+  '📅 *PROGRAMAR 3 DEL 17 DE OCT AL 23 DE NOV* — solo entre esas fechas',
+  '♾️ *PROGRAMAR 3 SIEMPRE* — quita la programacion',
+  '🌫️ *DIFUMINAR 3 SI* / *DIFUMINAR 3 NO* — fondo difuminado o negro',
+  '🗑️ *BORRAR 3* — borrar la imagen #3 (pide confirmacion)',
   '',
-  'Para guardar una foto en Drive, enviamela: el pie de foto sera el nombre del archivo.',
-  'Cualquier otro mensaje genera un poster, como siempre.',
+  '📸 *Guardar una foto en Drive:* enviamela; el pie de foto sera el nombre del archivo.',
+  '🎨 *Crear un poster:* escribe lo que quieres anunciar.',
 ].join('\n');
+// Opciones que el bot le ofrece al cliente, con su emoji y en negritas de WhatsApp (*asi*).
+// Los botones no admiten negritas: solo llevan emoji.
+const VISTA_PIE_VIEJO = "var caption = 'Te gusta? Responde PUBLICAR o dime que cambiar. (intento ' + (ronda + 1) + '/5)';";
+const VISTA_PIE = "var caption = '¿Te gusta? Responde ✅ *PUBLICAR* o ✏️ *dime que cambiar*. (intento ' + (ronda + 1) + '/5)';";
+const ESPERAR_RESPUESTA = {
+  message: 'Espero tu respuesta:\n✅ *PUBLICAR* — lo subo al carrusel\n✏️ *O dime que cambiar* — y lo corrijo',
+  options: { messageButtonLabel: '✍️ Responder', responseFormDescription: 'Escribe ✅ PUBLICAR o ✏️ dime que cambiar.' },
+};
+const BORRADO = { approveLabel: '🗑️ Borrar', disapproveLabel: '❌ Cancelar' };
 
 // Pone `head` al inicio de un nodo Code. `marker` es el comienzo del codigo original del nodo:
 // al volver a parchar solo se refresca lo que hay antes de el.
@@ -216,10 +258,12 @@ function patchInit(code, formato) {
     tail = replaceOnce(tail, /return \[\{ json: \{ chat: fid,/, () => INIT_LOGO + 'return [{ json: { chat: fid,', 'Init contexto', 'línea de salida');
     tail = replaceOnce(tail, /logo_margen: Z\.margen \}/, () => 'logo_margen: Z.margen, lleva_logo: llevaLogo }', 'Init contexto', 'salida con el logo');
   }
+  tail = patchTexto(tail, 'Init contexto');
   return formato + '\n' + tail;
 }
 
 function patchArmarVista(code) {
+  if (code.includes(VISTA_PIE_VIEJO)) code = code.replace(VISTA_PIE_VIEJO, () => VISTA_PIE);
   if (code.includes('Optimizar imagen sin logo')) return code;
   return replaceOnce(code, /try \{ bin = \$\('Componer logo'\)\.last\(\)\.binary; \} catch \(e3\) \{\}/, () => VISTA_IMAGEN, 'Armar vista', 'lectura de la imagen compuesta');
 }
@@ -242,6 +286,7 @@ function patchDetectar(code, clasificador, comandos) {
   if (!tail.startsWith('var m = {};')) throw new Error('Nodo "Detectar ruta": no se encontró el inicio del código');
   // Todo lo que va después de la foto (comandos y JEV) es de este script: se reescribe siempre.
   tail = replaceOnce(tail, /\/\/ ---- Comandos (?:de texto fijo|y clasificacion de JEV)[^\n]*----[\s\S]*$/, () => DETECTAR_COMANDOS, 'Detectar ruta', 'bloque de comandos');
+  tail = patchTexto(tail, 'Detectar ruta');
   return clasificador + '\n' + comandos + '\n' + tail;
 }
 
@@ -482,7 +527,7 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   get('Armar respuesta').parameters.jsCode = respuestas + '\n\n' + ARMAR_RESPUESTA;
   get('Enviar ayuda').parameters.textBody = AYUDA;
 
-  // 8. JEV: una llamada HTTP a jevmodel.org clasifica el mensaje antes de "Detectar ruta":
+  // 8. JEV: una llamada HTTP a jevmodel.org clasifica el mensaje antes de "Detectar ruta": spam,
   // póster (con o sin logo) o comando. Las preguntas (el cuerpo JSON) y la llave son del usuario:
   // se crean con los valores de fábrica y después no se vuelven a tocar.
   const previo = (name) => wf.nodes.find((n) => n.name === name);
@@ -506,7 +551,7 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
       headerParameters: { parameters: [{ name: 'Authorization', value: typeof llavePrevia === 'string' && llavePrevia ? llavePrevia : JEV_SIN_LLAVE }] },
       sendBody: true,
       specifyBody: 'json',
-      jsonBody: typeof jevPrevio.jsonBody === 'string' && jevPrevio.jsonBody ? jevPrevio.jsonBody : cuerpoJev(PREGUNTAS_JEV),
+      jsonBody: cuerpoJevVigente(jevPrevio.jsonBody, PREGUNTAS_JEV),
       options: { timeout: 15000 },
     },
     id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0015',
@@ -518,19 +563,37 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
     maxTries: 2,
     waitBetweenTries: 1000,
     onError: 'continueRegularOutput',
-    notes: 'Clasifica el mensaje con el modelo JEV (jevmodel.org): poster (con o sin logo) o comando. Las preguntas estan en el cuerpo JSON. Si falla, el flujo sigue como si no existiera.',
+    notes: 'Clasifica el mensaje con el modelo JEV (jevmodel.org): spam, poster (con o sin logo) o comando. Las preguntas estan en el cuerpo JSON. Si falla, el flujo sigue como si no existiera.',
   });
   wf.nodes = wf.nodes.filter((n) => n.name !== 'Modelo de JEV');
   delete wf.connections['Modelo de JEV'];
+  // Filtro de spam: lo que JEV marca como spam no se contesta.
+  addNode(wf.nodes, {
+    parameters: condicion('es-spam-1', '={{ $json.ruta }}', { type: 'string', operation: 'equals' }, 'spam'),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0010',
+    name: 'Es spam',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [0, 0],
+  });
+  addNode(wf.nodes, {
+    parameters: {},
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0011',
+    name: 'Mensaje ignorado',
+    type: 'n8n-nodes-base.noOp',
+    typeVersion: 1,
+    position: [0, 0],
+    notes: 'Spam: no se contesta. Queda aqui para verlo en la ejecucion.',
+  });
+  const noEsSpam = wf.connections['Es spam']?.main?.[1] || wf.connections['Detectar ruta']?.main?.[0];
+  if (!noEsSpam || !noEsSpam.some((c) => c.node === 'Es foto')) throw new Error('"Detectar ruta" ya no conecta con "Es foto"');
   wf.connections['Traer settings'] = { main: link('Hay texto') };
   wf.connections['Hay texto'] = { main: [link('JEV')[0], link('Detectar ruta')[0]] };
   // JEV también gasta tokens: se reportan igual que los del prompt y el audio.
   wf.connections.JEV = { main: link('Detectar ruta', 'Firmar consumo') };
-  // No hay filtro de spam: lo que no es foto ni comando genera un póster.
-  wf.nodes = wf.nodes.filter((n) => n.name !== 'Es spam' && n.name !== 'Mensaje ignorado');
-  delete wf.connections['Es spam'];
+  wf.connections['Detectar ruta'] = { main: link('Es spam') };
+  wf.connections['Es spam'] = { main: [link('Mensaje ignorado')[0], noEsSpam] };
   delete wf.connections['Mensaje ignorado'];
-  wf.connections['Detectar ruta'] = { main: link('Es foto') };
 
   // 9. Póster sin logo: "Con logo" decide. Sí: el camino de siempre. No: solo se ajusta al tamaño.
   const optimizar = get('Optimizar imagen');
@@ -581,7 +644,103 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   renameTarget(wf.connections, 'Armar prompt', 'Instrucciones del director');
   wf.connections['Instrucciones del director'] = { main: link('Armar prompt') };
 
-  // 11. Lienzo: cada nodo en su sección, con su nota (scripts/n8n-lienzo.mjs).
+  // 11. Espera de 5 segundos (n8n/espera.js). Un mensaje de texto se anota en whatsapp_espera,
+  // espera y lee las filas de su número: si llegó otro después, se retira (contestará el último);
+  // si sigue siendo el último, sigue con el texto de todos. Audios y fotos no esperan. Si la
+  // tabla falla, el mensaje sigue solo con su texto: nunca se queda sin contestar.
+  const esAudio = get('Es audio');
+  const trasFiltro = wf.connections['Solo mi numero']?.main?.[0];
+  if (!trasFiltro || !trasFiltro.some((c) => c.node === 'Es audio' || c.node === 'Es texto')) throw new Error('"Solo mi numero" ya no conecta con "Es audio"');
+  const [ax, ay] = esAudio.position;
+  const tabla = (name, id, operation, extra, notes) => addNode(wf.nodes, {
+    parameters: { resource: 'row', operation, dataTableId: { ...ESPERA_TABLA }, ...extra },
+    id,
+    name,
+    type: 'n8n-nodes-base.dataTable',
+    typeVersion: 1.1,
+    position: [ax, ay],
+    alwaysOutputData: true,
+    onError: 'continueRegularOutput',
+    notes,
+  });
+  addNode(wf.nodes, {
+    parameters: condicion('es-texto-1', "={{ String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || '').trim() }}", { type: 'string', operation: 'notEmpty', singleValue: true }),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0016',
+    name: 'Es texto',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [ax, ay],
+    notes: 'Solo los mensajes escritos esperan 5 segundos. Un audio o una foto siguen de inmediato.',
+  });
+  tabla('Anotar mensaje', '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0017', 'insert', {
+    columns: {
+      mappingMode: 'defineBelow',
+      value: { numero: ESPERA_NUMERO, mensaje_id: '={{ ' + ESPERA_MENSAJE_ID + ' }}', texto: "={{ String($('WhatsApp Trigger').first().json.messages?.[0]?.text?.body || '') }}" },
+      matchingColumns: [],
+      schema: ['numero', 'mensaje_id', 'texto'].map((c) => ({ id: c, displayName: c, required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: true })),
+    },
+    options: {},
+  }, 'Guarda el mensaje en whatsapp_espera para que los que lleguen despues lo vean.');
+  addNode(wf.nodes, {
+    parameters: { amount: ESPERA_SEGUNDOS, unit: 'seconds' },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0018',
+    name: 'Esperar 5 segundos',
+    type: 'n8n-nodes-base.wait',
+    typeVersion: 1.1,
+    position: [ax, ay],
+    webhookId: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0118',
+    notes: 'AQUI se cambia cuanto se espera despues del ultimo mensaje antes de contestar.',
+  });
+  tabla('Leer mensajes', '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0019', 'get', { matchType: 'allConditions', filters: ESPERA_FILTRO, returnAll: true },
+    'Todos los mensajes de este numero que siguen en espera.');
+  addNode(wf.nodes, {
+    parameters: { jsCode: snippets.espera.replace(/\s+$/, '') + '\n\n' + JUNTAR_MENSAJES },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0020',
+    name: 'Juntar mensajes',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: [ax, ay],
+    notes: 'Si llego otro mensaje despues de este, este se retira. Si es el ultimo, junta el texto de todos.',
+  });
+  addNode(wf.nodes, {
+    parameters: condicion('soy-el-ultimo-1', '={{ $json.seguir !== false }}', { type: 'boolean', operation: 'true', singleValue: true }),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0021',
+    name: 'Soy el ultimo',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [ax, ay],
+  });
+  // Arriba de "Es audio": con executionOrder v1 la tabla se vacía antes de seguir con el mensaje.
+  tabla('Limpiar espera', '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0022', 'deleteRows', { matchType: 'allConditions', filters: ESPERA_FILTRO, options: {} },
+    'Vacia la espera de este numero: ya se van a contestar todos juntos.');
+  get('Limpiar espera').position = [ax, ay - 224];
+  addNode(wf.nodes, {
+    parameters: {},
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0023',
+    name: 'Mensaje juntado',
+    type: 'n8n-nodes-base.noOp',
+    typeVersion: 1,
+    position: [ax, ay],
+    notes: 'Llego otro mensaje despues: este no contesta, lo hace el ultimo con el texto de todos.',
+  });
+  wf.connections['Solo mi numero'] = { main: [link('Es texto')[0], ...(wf.connections['Solo mi numero'].main.slice(1))] };
+  wf.connections['Es texto'] = { main: [link('Anotar mensaje')[0], link('Es audio')[0]] };
+  wf.connections['Anotar mensaje'] = { main: link('Esperar 5 segundos') };
+  wf.connections['Esperar 5 segundos'] = { main: link('Leer mensajes') };
+  wf.connections['Leer mensajes'] = { main: link('Juntar mensajes') };
+  wf.connections['Juntar mensajes'] = { main: link('Soy el ultimo') };
+  wf.connections['Soy el ultimo'] = { main: [link('Limpiar espera', 'Es audio')[0], link('Mensaje juntado')[0]] };
+  delete wf.connections['Limpiar espera'];
+  delete wf.connections['Mensaje juntado'];
+
+  // 12. Emojis en las opciones que se le ofrecen al cliente (publicar / cambiar, borrar / cancelar).
+  const esperar = get('Esperar respuesta');
+  esperar.parameters.message = ESPERAR_RESPUESTA.message;
+  esperar.parameters.options = { ...(esperar.parameters.options || {}), ...ESPERAR_RESPUESTA.options };
+  const borrado = get('Confirmar borrado').parameters;
+  borrado.approvalOptions = { values: { ...(borrado.approvalOptions?.values || {}), ...BORRADO } };
+
+  // 13. Lienzo: cada nodo en su sección, con su nota (scripts/n8n-lienzo.mjs).
   if (lienzo) ordenarLienzo(wf);
 
   if ('nodeCount' in wf) wf.nodeCount = wf.nodes.length;
@@ -594,7 +753,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error('Uso: node scripts/n8n-patch-flujo.mjs <entrada.json> <salida.json>');
     process.exit(1);
   }
-  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
+  const snippets = Object.fromEntries(['firma', 'consumo', 'formato', 'prompt', 'clasificador', 'comandos', 'respuestas', 'espera'].map((k) => [k, readFileSync(join(ROOT, 'n8n/' + k + '.js'), 'utf8')]));
   const wf = patchWorkflow(JSON.parse(readFileSync(input, 'utf8')), snippets);
   // Solo lo que el editor de n8n necesita para importar.
   const { name, nodes, connections, settings } = wf;
