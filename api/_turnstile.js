@@ -1,25 +1,25 @@
-// Cloudflare Turnstile: captcha del registro y de la recuperación de contraseña.
-// Sin TURNSTILE_SECRET_KEY y fuera de producción no se pide (dev y tests).
-// En producción sin claves falla cerrado: no se acepta ningún registro.
+// Cloudflare Turnstile: captcha opcional del registro y de la recuperación de contraseña.
+// El captcha se pide solo si están TURNSTILE_SECRET_KEY y TURNSTILE_SITE_KEY. Sin ellas,
+// el registro sigue protegido por los límites por IP y por correo.
 
 const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const VERIFY_TIMEOUT_MS = 8000;
 
-const isProd = () => process.env.NODE_ENV === 'production';
+const captchaOn = () => Boolean(process.env.TURNSTILE_SECRET_KEY && process.env.TURNSTILE_SITE_KEY);
 
 // Clave pública del widget (va al navegador) o null si no se usa.
 export function turnstileSiteKey() {
-  return process.env.TURNSTILE_SECRET_KEY ? (process.env.TURNSTILE_SITE_KEY || null) : null;
+  return captchaOn() ? process.env.TURNSTILE_SITE_KEY : null;
 }
 
+// El captcha no es requisito para que el registro esté disponible.
 export function turnstileReady() {
-  if (process.env.TURNSTILE_SECRET_KEY && process.env.TURNSTILE_SITE_KEY) return true;
-  return !isProd();
+  return true;
 }
 
 export async function verifyTurnstile(token, ip) {
+  if (!captchaOn()) return true;
   const secret = process.env.TURNSTILE_SECRET_KEY;
-  if (!secret) return !isProd();
   if (!token || typeof token !== 'string' || token.length > 2048) return false;
 
   const form = new URLSearchParams({ secret, response: token });
