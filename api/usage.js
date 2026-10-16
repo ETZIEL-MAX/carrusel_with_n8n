@@ -2,6 +2,7 @@ import {
   requireSession, checkRateLimit, getClientIp, resolveUserId, isSuperAdmin,
   getUsers, getStorageUsage, getUsageSummary, currentMonth, isValidMonth,
   getConfig, updateConfig, imagePriceFrom,
+  getGenerationQuota, globalImageLimit, isValidImageLimit, MAX_MONTHLY_IMAGES,
   errorResponse, successResponse,
 } from './_utils.js';
 
@@ -24,7 +25,8 @@ export async function GET(request) {
 
   try {
     if (isSuperAdmin(auth.payload) && !url.searchParams.get('userId')) {
-      return successResponse({ imagePriceUsd: imagePriceFrom(await getConfig()) }, 'Config');
+      const cfg = await getConfig();
+      return successResponse({ imagePriceUsd: imagePriceFrom(cfg), monthlyImageLimit: globalImageLimit(cfg) }, 'Config');
     }
     const userId = resolveUserId(request, auth.payload);
     if (userId instanceof Response) return userId;
@@ -34,7 +36,8 @@ export async function GET(request) {
 
     const storage = await getStorageUsage(userId, users);
     const usage = await getUsageSummary(userId, month);
-    return successResponse({ userId, storage, usage }, 'Usage');
+    const quota = await getGenerationQuota(userId, users);
+    return successResponse({ userId, storage, usage, quota }, 'Usage');
   } catch (err) {
     console.error('GET /api/usage error:', err);
     return errorResponse('Failed to fetch usage', 500);
@@ -54,14 +57,24 @@ export async function PATCH(request) {
     return errorResponse('Invalid JSON', 400);
   }
 
-  const { imagePriceUsd } = body || {};
-  if (typeof imagePriceUsd !== 'number' || !Number.isFinite(imagePriceUsd) || imagePriceUsd < 0 || imagePriceUsd > MAX_IMAGE_PRICE_USD) {
+  // Body: { imagePriceUsd?, monthlyImageLimit? } (monthlyImageLimit null = sin tope)
+  const { imagePriceUsd, monthlyImageLimit } = body || {};
+  if (imagePriceUsd === undefined && monthlyImageLimit === undefined) {
+    return errorResponse('Nothing to update', 400);
+  }
+  if (imagePriceUsd !== undefined && (typeof imagePriceUsd !== 'number' || !Number.isFinite(imagePriceUsd) || imagePriceUsd < 0 || imagePriceUsd > MAX_IMAGE_PRICE_USD)) {
     return errorResponse(`imagePriceUsd debe ser un número entre 0 y ${MAX_IMAGE_PRICE_USD}`, 400);
+  }
+  if (monthlyImageLimit !== undefined && !isValidImageLimit(monthlyImageLimit)) {
+    return errorResponse(`monthlyImageLimit debe ser null o un entero entre 0 y ${MAX_MONTHLY_IMAGES}`, 400);
   }
 
   try {
-    const cfg = await updateConfig({ imagePriceUsd });
-    return successResponse({ imagePriceUsd: imagePriceFrom(cfg) }, 'Config updated');
+    const patch = {};
+    if (imagePriceUsd !== undefined) patch.imagePriceUsd = imagePriceUsd;
+    if (monthlyImageLimit !== undefined) patch.monthlyImageLimit = monthlyImageLimit;
+    const cfg = await updateConfig(patch);
+    return successResponse({ imagePriceUsd: imagePriceFrom(cfg), monthlyImageLimit: globalImageLimit(cfg) }, 'Config updated');
   } catch (err) {
     console.error('PATCH /api/usage error:', err);
     return errorResponse('Failed to update config', 500);

@@ -6,6 +6,7 @@ import {
   isLoginLocked, noteLoginFailure, clearLoginFailures,
 } from './_utils.js';
 import { verify } from '@node-rs/argon2';
+import { accountOptions } from './account.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_AUTH || '5', 10);
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
@@ -115,7 +116,8 @@ export async function DELETE(request) {
 export async function GET(request) {
   const payload = await getSession(request);
   if (!payload) {
-    return jsonResponse({ authenticated: false });
+    // Para el login: si mostrar "Crear cuenta" / "¿Olvidaste tu contraseña?" y la clave de Turnstile.
+    return jsonResponse({ authenticated: false, account: accountOptions() });
   }
 
   if (payload.role === 'user' && payload.userId) {

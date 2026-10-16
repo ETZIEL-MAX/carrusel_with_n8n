@@ -1,9 +1,10 @@
 import {
   getUsers, getImages, createUser, updateUser, updateUserPassword, deleteUser,
   requireSession, checkRateLimit, getClientIp, normalizeUserId,
-  getStorageUsage, generateClientToken, isValidNewPassword, PASSWORD_ERROR,
+  getStorageUsage, getGenerationQuota, generateClientToken, newClientToken, isValidNewPassword, PASSWORD_ERROR,
   errorResponse, successResponse,
 } from './_utils.js';
+import { numbersConfigured, pushNumber } from './_n8n-numbers.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_AUTH || '5', 10);
 
@@ -31,12 +32,14 @@ export async function GET(request) {
       } catch {
         storage = null;
       }
+      const quota = await getGenerationQuota(userId, users).catch(() => null);
       return {
         userId,
         name: data.name || userId,
         email: data.email || '',
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
+        createdBy: data.createdBy || 'admin',
         imageCount: sorted.length,
         preview: sorted.slice(0, 3).map((i) => i.url),
         usedBytes: storage?.usedBytes ?? 0,
@@ -47,6 +50,8 @@ export async function GET(request) {
         hasToken: Boolean(data.webhookTokenEnc),
         tokenHint: data.webhookTokenHint || null,
         tokenCreatedAt: data.webhookTokenCreatedAt || null,
+        whatsappPhone: data.whatsappPhone || null,
+        quota,
       };
     })
   );
@@ -72,7 +77,19 @@ export async function POST(request) {
     const userId = normalizeUserId(url.searchParams.get('userId'));
     if (!userId) return errorResponse('Invalid userId', 400);
     try {
-      const created = await generateClientToken(userId);
+      // Con número vinculado, el token nuevo va primero a la fila de n8n: si no, ese
+      // WhatsApp dejaría de poder firmar.
+      const token = newClientToken();
+      const phone = (await getUsers())[userId]?.whatsappPhone;
+      if (phone && numbersConfigured()) {
+        try {
+          await pushNumber({ action: 'upsert', numero: phone, numeroAnterior: null, carrusel: userId, token });
+        } catch (err) {
+          console.error('POST /api/users/token n8n error:', err.message);
+          return errorResponse('No se pudo actualizar el token en n8n; el anterior sigue valiendo', 502);
+        }
+      }
+      const created = await generateClientToken(userId, token);
       if (!created) return errorResponse('User not found', 404);
       return successResponse({ userId, ...created }, 'Token generado');
     } catch (err) {
@@ -150,13 +167,13 @@ export async function PATCH(request) {
     return successResponse({ userId, password }, 'Password updated');
   }
 
-  const { name, email, storageLimitMb } = body || {};
-  if (name === undefined && email === undefined && storageLimitMb === undefined) {
+  const { name, email, storageLimitMb, monthlyImageLimit } = body || {};
+  if (name === undefined && email === undefined && storageLimitMb === undefined && monthlyImageLimit === undefined) {
     return errorResponse('Nothing to update', 400);
   }
 
   try {
-    const updated = await updateUser(userId, { name, email, storageLimitMb });
+    const updated = await updateUser(userId, { name, email, storageLimitMb, monthlyImageLimit });
     if (!updated) {
       return errorResponse('User not found', 404);
     }
@@ -164,6 +181,7 @@ export async function PATCH(request) {
       {
         userId, name: updated.name, email: updated.email, updatedAt: updated.updatedAt,
         storageLimitMb: updated.storageLimitMb ?? null,
+        monthlyImageLimit: updated.monthlyImageLimit ?? null,
       },
       'User updated'
     );
@@ -186,6 +204,14 @@ export async function DELETE(request) {
   const userId = normalizeUserId(url.searchParams.get('userId'));
   if (!userId) {
     return errorResponse('Invalid userId', 400);
+  }
+
+  // Su número deja de estar en n8n (si falla se registra y se sigue: la fila apuntaría a
+  // un USERn que ya no existe y que no se reutiliza, así que no da acceso a nada).
+  const phone = (await getUsers())[userId]?.whatsappPhone;
+  if (phone && numbersConfigured()) {
+    await pushNumber({ action: 'delete', numero: phone, carrusel: userId })
+      .catch((err) => console.error('DELETE /api/users n8n error:', err.message));
   }
 
   const deleted = await deleteUser(userId);

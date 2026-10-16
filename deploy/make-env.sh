@@ -7,6 +7,9 @@ umask 077
   printf "%s\n" "ADMIN_PASSWORD_HASH='\$argon2id\$v=19\$m=19456,t=2,p=1\$Jh0XC1lAaTMwmkroh0rIZA\$ZbFZ7LNc6QJqk/hbVtOhv1V7rsORlWFOh7OOPKnubTk'"
   printf "JWT_SECRET=%s\n" "$(openssl rand -hex 32)"
   printf "WEBHOOK_SECRET=%s\n" "$(openssl rand -hex 32)"
+  printf "N8N_NUMBERS_SECRET=%s\n" "$(openssl rand -hex 32)"
+  # Registro propio: completar a mano RESEND_API_KEY, MAIL_FROM, TURNSTILE_SITE_KEY,
+  # TURNSTILE_SECRET_KEY, N8N_NUMBERS_WEBHOOK_URL y N8N_ALLOWED_HOSTS (ver .env.example).
   printf "UPLOAD_ALLOWED_HOSTS=%s\n" "carrusel.etziel.com,aliyuncs.com,cloudinary.com,res.cloudinary.com,pollinations.ai,image.pollinations.ai"
 } > .env.prod
 ls -la .env.prod

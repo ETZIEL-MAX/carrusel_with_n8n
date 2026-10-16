@@ -83,14 +83,30 @@ const API = (() => {
     logoutAll: () => request('/api/auth?all=1', { method: 'DELETE' }),
     me: () => request('/api/auth'),
 
+    // WhatsApp vinculado (el super-admin pasa userId)
+    getWhatsapp: (userId) => request(userId ? withUserId('/api/whatsapp', userId) : '/api/whatsapp'),
+    linkWhatsapp: (userId, phone) =>
+      request(userId ? withUserId('/api/whatsapp', userId) : '/api/whatsapp', { method: 'POST', body: JSON.stringify({ phone }) }),
+    unlinkWhatsapp: (userId) =>
+      request(userId ? withUserId('/api/whatsapp', userId) : '/api/whatsapp', { method: 'DELETE' }),
+
+    // Cuenta propia: registro, verificación de correo y recuperación de contraseña
+    account: {
+      register: (data) => request('/api/account/register', { method: 'POST', body: JSON.stringify(data) }),
+      verify: (token) => request('/api/account/verify', { method: 'POST', body: JSON.stringify({ token }) }),
+      forgot: (data) => request('/api/account/forgot', { method: 'POST', body: JSON.stringify(data) }),
+      reset: (token, password) =>
+        request('/api/account/reset', { method: 'POST', body: JSON.stringify({ token, password }) }),
+    },
+
     // User management (super-admin)
     getUsers: () => request('/api/users'),
     addUser: ({ name, email, password }) =>
       request('/api/users', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
-    updateUser: (userId, { name, email, storageLimitMb }) =>
+    updateUser: (userId, { name, email, storageLimitMb, monthlyImageLimit }) =>
       request(`/api/users?userId=${encodeURIComponent(userId)}`, {
         method: 'PATCH',
-        body: JSON.stringify({ name, email, storageLimitMb }),
+        body: JSON.stringify({ name, email, storageLimitMb, monthlyImageLimit }),
       }),
     // Genera o regenera el token de webhook. La respuesta es la única vez que se ve.
     generateToken: (userId) =>

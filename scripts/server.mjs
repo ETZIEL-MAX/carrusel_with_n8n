@@ -60,6 +60,8 @@ const imagesUploadHandler = await import('../api/images-upload.js');
 const settingsHandler = await import('../api/settings.js');
 const generateHandler = await import('../api/generate.js');
 const usageHandler = await import('../api/usage.js');
+const accountHandler = await import('../api/account.js');
+const whatsappHandler = await import('../api/whatsapp.js');
 
 // Subidas que reciben el cuerpo como flujo (se escribe a disco, no se junta en memoria).
 const STREAM_UPLOADS = {
@@ -80,6 +82,11 @@ const API_ROUTES = {
   '/api/health': healthHandler,
   '/api/settings': settingsHandler,
   '/api/generate': generateHandler,
+  '/api/account/register': accountHandler,
+  '/api/account/verify': accountHandler,
+  '/api/account/forgot': accountHandler,
+  '/api/account/reset': accountHandler,
+  '/api/whatsapp': whatsappHandler,
 };
 
 // ---- Seed de ejemplo (solo si está vacío y NO en producción) ----
@@ -318,7 +325,9 @@ async function serveStatic(req, res, url) {
 const CSP = [
   "default-src 'self'",
   // Cloudflare inyecta su beacon de Web Analytics en el HTML (zona de carrusel.etziel.com).
-  "script-src 'self' https://static.cloudflareinsights.com",
+  // Turnstile (captcha del registro) carga su script y su widget en un iframe.
+  "script-src 'self' https://static.cloudflareinsights.com https://challenges.cloudflare.com",
+  'frame-src https://challenges.cloudflare.com',
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   'font-src https://fonts.gstatic.com',
   "img-src 'self' https: data: blob:",

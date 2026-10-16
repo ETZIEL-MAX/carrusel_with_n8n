@@ -87,6 +87,8 @@
   const accountSection = document.getElementById('accountSection');
   const planSection = document.getElementById('planSection');
   const setStorageLimit = document.getElementById('setStorageLimit');
+  const setImageLimit = document.getElementById('setImageLimit');
+  const setImageLimitHint = document.getElementById('setImageLimitHint');
   const setStorageHint = document.getElementById('setStorageHint');
   const tokenStatus = document.getElementById('tokenStatus');
   const tokenGenBtn = document.getElementById('tokenGenBtn');
@@ -102,6 +104,7 @@
   const imgModalForm = document.getElementById('imgModalForm');
   const imgModalTitle = document.getElementById('imgModalTitle');
   const imgUrl = document.getElementById('imgUrl');
+  const imgUrlField = document.getElementById('imgUrlField');
   const imgAlt = document.getElementById('imgAlt');
   const imgDuration = document.getElementById('imgDuration');
   const imgFormError = document.getElementById('imgFormError');
@@ -219,7 +222,7 @@ function escapeHtml(str) {
     }
   }
 
-  function renderPlan({ storage, usage }) {
+  function renderPlan({ storage, usage, quota }) {
     if (!storage || !usage) { planPanel.hidden = true; return; }
     const { pct, cls } = storageLevel(storage.usedBytes, storage.limitBytes);
     storageText.textContent = `${formatBytes(storage.usedBytes)} de ${formatBytes(storage.limitBytes)}`;
@@ -233,8 +236,10 @@ function escapeHtml(str) {
     const videos = usage.videos
       ? `${formatInt(usage.videos)}${usage.videoSeconds ? ` · ${formatInt(usage.videoSeconds)} s` : ''}`
       : '0';
+    // El tope es del mes en curso: en meses anteriores solo se muestra lo usado.
+    const capped = quota && quota.limit !== null && quota.month === usage.month;
     const stats = [
-      ['Imágenes', formatInt(usage.images)],
+      ['Imágenes', capped ? `${formatInt(usage.images)} de ${formatInt(quota.limit)}` : formatInt(usage.images)],
       ['Videos', videos],
       ['Tokens', formatInt(usage.tokensTotal)],
       ['Costo aprox.', formatUsd(usage.estimatedCostUsd)],
@@ -245,6 +250,9 @@ function escapeHtml(str) {
     usageHint.textContent = usage.images || usage.videos || usage.tokensTotal
       ? `Tokens: los que reporta el proveedor. Costo aproximado: ${formatInt(usage.imagesNoTokens)} ${usage.imagesNoTokens === 1 ? 'imagen' : 'imágenes'} sin tokens reportados × ${formatUsd(usage.imagePriceUsd)}.`
       : 'Sin generación registrada en este mes.';
+    if (capped && quota.remaining === 0) {
+      usageHint.textContent = `Llegaste al tope de ${formatInt(quota.limit)} imágenes de este mes. Se renueva el día 1.`;
+    }
     planPanel.hidden = false;
   }
 
@@ -346,12 +354,18 @@ function escapeHtml(str) {
         setTimeout(announceNews, 400);
         return;
       }
+      applyAccountOptions(res.account);
     } catch { /* ignore */ }
     showLogin();
   }
 
   function showLogin() {
     loginView.hidden = false;
+    userLoginOk.hidden = true;
+    // Tras cerrar sesión todavía no se sabe si hay registro abierto: se pregunta.
+    if (!accountOpts) {
+      API.me().then((r) => { if (!r.authenticated) applyAccountOptions(r.account); }).catch(() => {});
+    }
     superAdminDashboard.hidden = true;
     userDashboard.hidden = true;
     session = null;
@@ -444,6 +458,216 @@ function escapeHtml(str) {
     }
   });
 
+  // ===== Cuenta propia: crear cuenta y recuperar contraseña =====
+  const userLoginOk = document.getElementById('userLoginOk');
+  const showSignupBtn = document.getElementById('showSignupBtn');
+  const showForgotBtn = document.getElementById('showForgotBtn');
+  const signupForm = document.getElementById('signupForm');
+  const signupError = document.getElementById('signupError');
+  const signupBtn = document.getElementById('signupBtn');
+  const signupDone = document.getElementById('signupDone');
+  const forgotForm = document.getElementById('forgotForm');
+  const forgotError = document.getElementById('forgotError');
+  const forgotBtn = document.getElementById('forgotBtn');
+  const forgotDone = document.getElementById('forgotDone');
+  const resetForm = document.getElementById('resetForm');
+  const resetError = document.getElementById('resetError');
+  const resetBtn = document.getElementById('resetBtn');
+
+  let accountOpts = null; // { signupEnabled, recoveryEnabled, turnstileSiteKey } de GET /api/auth
+  let resetToken = null;
+  const captchas = {}; // id del contenedor -> id del widget de Turnstile
+  let turnstileLoading = null;
+
+  function applyAccountOptions(opts) {
+    accountOpts = opts || { signupEnabled: false, recoveryEnabled: false, turnstileSiteKey: null };
+    showSignupBtn.hidden = !accountOpts.signupEnabled;
+    showForgotBtn.hidden = !accountOpts.recoveryEnabled;
+  }
+
+  function showLoginPanel(id) {
+    loginTabs.forEach(t => { const on = t.dataset.mode === 'user'; t.classList.toggle('is-active', on); t.setAttribute('aria-selected', on); });
+    loginPanels.forEach(p => p.classList.toggle('is-active', p.id === id));
+  }
+
+  // El script de Turnstile solo se carga al abrir "Crear cuenta" u "Olvidé mi contraseña".
+  function loadTurnstile() {
+    if (window.turnstile) return Promise.resolve(window.turnstile);
+    if (!turnstileLoading) {
+      turnstileLoading = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        s.async = true;
+        s.onload = () => resolve(window.turnstile);
+        s.onerror = () => { turnstileLoading = null; reject(new Error('No se pudo cargar la verificación anti-bots. Recarga la página.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return turnstileLoading;
+  }
+
+  async function mountCaptcha(containerId, errorEl) {
+    if (!accountOpts?.turnstileSiteKey || captchas[containerId] !== undefined) return;
+    try {
+      const ts = await loadTurnstile();
+      captchas[containerId] = ts.render('#' + containerId, { sitekey: accountOpts.turnstileSiteKey, language: 'es', theme: 'dark' });
+    } catch (err) {
+      errorEl.textContent = err.message;
+    }
+  }
+
+  const captchaToken = (containerId) =>
+    captchas[containerId] !== undefined && window.turnstile ? (window.turnstile.getResponse(captchas[containerId]) || '') : '';
+  const resetCaptcha = (containerId) => {
+    if (captchas[containerId] !== undefined && window.turnstile) window.turnstile.reset(captchas[containerId]);
+  };
+  const needsCaptcha = (containerId) => Boolean(accountOpts?.turnstileSiteKey) && !captchaToken(containerId);
+
+  showSignupBtn.addEventListener('click', () => {
+    signupForm.hidden = false;
+    signupDone.hidden = true;
+    signupError.textContent = '';
+    showLoginPanel('panelSignup');
+    mountCaptcha('signupCaptcha', signupError);
+  });
+
+  showForgotBtn.addEventListener('click', () => {
+    forgotForm.hidden = false;
+    forgotDone.hidden = true;
+    forgotError.textContent = '';
+    const typed = userEmail.value.trim();
+    if (typed) document.getElementById('forgotEmail').value = typed;
+    showLoginPanel('panelForgot');
+    mountCaptcha('forgotCaptcha', forgotError);
+  });
+
+  document.querySelectorAll('[data-back-login]').forEach((btn) => {
+    btn.addEventListener('click', () => showLoginPanel('panelUser'));
+  });
+
+  signupForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    signupError.textContent = '';
+    const name = document.getElementById('signupName').value.trim();
+    const email = document.getElementById('signupEmail').value.trim().toLowerCase();
+    const password = document.getElementById('signupPassword').value;
+    if (password !== document.getElementById('signupPassword2').value) {
+      signupError.textContent = 'Las contraseñas no coinciden';
+      return;
+    }
+    if (needsCaptcha('signupCaptcha')) {
+      signupError.textContent = 'Completa la verificación anti-bots';
+      return;
+    }
+    signupBtn.disabled = true;
+    signupBtn.textContent = 'Creando…';
+    try {
+      await API.account.register({ name, email, password, turnstile: captchaToken('signupCaptcha') });
+      signupForm.reset();
+      signupForm.hidden = true;
+      signupDone.textContent = `Te enviamos un correo a ${email}. Abre el enlace para activar tu cuenta (vale 24 horas). Si no llega en unos minutos, revisa la carpeta de spam.`;
+      signupDone.hidden = false;
+    } catch (err) {
+      signupError.textContent = err.message || 'No se pudo crear la cuenta';
+    } finally {
+      resetCaptcha('signupCaptcha');
+      signupBtn.disabled = false;
+      signupBtn.textContent = 'Crear cuenta';
+    }
+  });
+
+  forgotForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    forgotError.textContent = '';
+    const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
+    if (needsCaptcha('forgotCaptcha')) {
+      forgotError.textContent = 'Completa la verificación anti-bots';
+      return;
+    }
+    forgotBtn.disabled = true;
+    forgotBtn.textContent = 'Enviando…';
+    try {
+      await API.account.forgot({ email, turnstile: captchaToken('forgotCaptcha') });
+      forgotForm.hidden = true;
+      forgotDone.textContent = `Si ${email} tiene una cuenta, te llegará un enlace en unos minutos (vale 30 minutos). Revisa también la carpeta de spam.`;
+      forgotDone.hidden = false;
+    } catch (err) {
+      forgotError.textContent = err.message || 'No se pudo enviar el correo';
+    } finally {
+      resetCaptcha('forgotCaptcha');
+      forgotBtn.disabled = false;
+      forgotBtn.textContent = 'Enviar enlace';
+    }
+  });
+
+  resetForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    resetError.textContent = '';
+    const password = document.getElementById('resetPassword').value;
+    if (password !== document.getElementById('resetPassword2').value) {
+      resetError.textContent = 'Las contraseñas no coinciden';
+      return;
+    }
+    if (!resetToken) {
+      resetError.textContent = 'El enlace no es válido. Pide uno nuevo.';
+      return;
+    }
+    resetBtn.disabled = true;
+    resetBtn.textContent = 'Guardando…';
+    try {
+      await API.account.reset(resetToken, password);
+      resetToken = null;
+      resetForm.reset();
+      showLoginPanel('panelUser');
+      userLoginOk.textContent = 'Contraseña actualizada. Ya puedes entrar con la nueva.';
+      userLoginOk.hidden = false;
+    } catch (err) {
+      resetError.textContent = err.message || 'No se pudo cambiar la contraseña';
+    } finally {
+      resetBtn.disabled = false;
+      resetBtn.textContent = 'Guardar contraseña';
+    }
+  });
+
+  // Enlaces de los correos: /admin.html#verificar=<token> o #restablecer=<token>.
+  // Van en el fragmento para que el token no llegue a los logs del servidor; se borra
+  // de la barra de direcciones en cuanto se lee.
+  async function handleAccountLink() {
+    const m = /^#(verificar|restablecer)=([A-Za-z0-9_-]+)$/.exec(location.hash);
+    if (!m) return null;
+    history.replaceState(null, '', location.pathname + location.search);
+    if (m[1] === 'restablecer') {
+      resetToken = m[2];
+      return { kind: 'reset' };
+    }
+    try {
+      const res = await API.account.verify(m[2]);
+      session = { role: 'user', userId: res.data?.userId, name: res.data?.name, email: res.data?.email };
+      currentUserId = session.userId;
+      managingAsSuperAdmin = false;
+      showUserDashboard();
+      toast('¡Cuenta creada! Ya puedes subir tus imágenes.');
+      return { kind: 'verified' };
+    } catch (err) {
+      return { kind: 'error', message: err.message || 'El enlace no es válido' };
+    }
+  }
+
+  async function startup() {
+    const link = await handleAccountLink();
+    if (link?.kind === 'verified') return;
+    if (link?.kind === 'reset') {
+      showLogin();
+      showLoginPanel('panelReset');
+      return;
+    }
+    await checkAuth();
+    if (link?.kind === 'error' && !loginView.hidden) {
+      showLoginPanel('panelUser');
+      userLoginError.textContent = link.message;
+    }
+  }
+
   superAdminLogoutBtn.addEventListener('click', async () => {
     try { await API.logout(); } catch { /* ignore */ }
     session = null;
@@ -476,8 +700,34 @@ function escapeHtml(str) {
     try {
       const res = await API.getConfig();
       priceInput.value = res?.data?.imagePriceUsd ?? '';
+      limitInput.value = res?.data?.monthlyImageLimit ?? '';
     } catch { /* se queda vacío */ }
   }
+
+  // Tope mensual de imágenes (global; cada usuario puede tener el suyo)
+  const limitForm = document.getElementById('limitForm');
+  const limitInput = document.getElementById('limitInput');
+  const limitSaveBtn = document.getElementById('limitSaveBtn');
+  limitForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const raw = limitInput.value.trim();
+    const value = raw === '' ? null : Number(raw);
+    if (value !== null && (!Number.isInteger(value) || value < 0 || value > 100000)) {
+      toast('El tope debe ser un número entero entre 0 y 100000, o vacío para no tener tope', 'error');
+      return;
+    }
+    limitSaveBtn.disabled = true;
+    try {
+      const res = await API.updateConfig({ monthlyImageLimit: value });
+      limitInput.value = res?.data?.monthlyImageLimit ?? '';
+      toast(value === null ? 'Sin tope general de imágenes' : 'Tope de imágenes guardado');
+      loadSuperAdminUsers();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      limitSaveBtn.disabled = false;
+    }
+  });
 
   priceForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -542,10 +792,10 @@ function escapeHtml(str) {
           </div>
           <div class="user-card__storage">
             <div class="meter ${level.cls}"><div class="meter__fill" style="width:${level.pct}%"></div></div>
-            <span>${escapeHtml(formatBytes(user.usedBytes))} de ${escapeHtml(formatBytes(user.limitBytes))} · ${user.hasToken ? 'con token' : 'sin token'}</span>
+            <span>${escapeHtml(formatBytes(user.usedBytes))} de ${escapeHtml(formatBytes(user.limitBytes))} · ${user.hasToken ? 'con token' : 'sin token'}${user.whatsappPhone ? ` · WhatsApp ${escapeHtml(formatPhone(user.whatsappPhone))}` : ''}</span>
           </div>
           <div class="user-card__meta" style="font-size: 0.8rem; color: var(--ink-dim);">
-            Creado: ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}
+            ${user.createdBy === 'self' ? 'Registro propio · ' : ''}Creado: ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}
             ${user.updatedAt ? ' · Actualizado: ' + new Date(user.updatedAt).toLocaleString() : ''}
           </div>
           <div style="display:flex; gap:.4rem; margin-top:.8rem; flex-wrap:wrap;">
@@ -840,6 +1090,13 @@ function escapeHtml(str) {
       settingsFormError.textContent = '';
       setStorageLimit.value = user.storageLimitMb ?? '';
       setStorageLimit.placeholder = String(user.defaultLimitMb ?? 500);
+      setImageLimit.value = user.quota?.own ?? '';
+      setImageLimit.placeholder = user.quota && user.quota.own === null
+        ? (user.quota.limit === null ? 'Sin tope' : String(user.quota.limit))
+        : '';
+      setImageLimitHint.textContent = user.quota
+        ? `Este mes: ${formatInt(user.quota.used)} ${user.quota.limit === null ? '(sin tope)' : `de ${formatInt(user.quota.limit)}`}. Déjalo vacío para usar el tope general.`
+        : 'Déjalo vacío para usar el tope general.';
       setStorageHint.textContent = user.limitBytes
         ? `Usado: ${formatBytes(user.usedBytes)} de ${formatBytes(user.limitBytes)}. Déjalo vacío para usar el límite por defecto (${user.defaultLimitMb ?? 500} MB).`
         : 'Déjalo vacío para usar el límite por defecto.';
@@ -880,6 +1137,8 @@ function escapeHtml(str) {
       } catch { /* keep example */ }
     }
 
+    loadWhatsapp(isSelfService ? null : user.userId);
+
     // Load generation settings async
     const genUserId = isSelfService ? null : user.userId;
     try {
@@ -897,6 +1156,86 @@ function escapeHtml(str) {
     } catch { /* leave fields empty */ }
   }
 
+  // ===== WhatsApp vinculado =====
+  const waStatus = document.getElementById('waStatus');
+  const waPhone = document.getElementById('waPhone');
+  const waLinkBtn = document.getElementById('waLinkBtn');
+  const waUnlinkBtn = document.getElementById('waUnlinkBtn');
+  const waError = document.getElementById('waError');
+  let waUserId = null; // null = el propio usuario; USERn = el super-admin gestionando
+
+  const formatPhone = (p) => (p && p.length === 10 ? `${p.slice(0, 2)} ${p.slice(2, 6)} ${p.slice(6)}` : p || '');
+
+  function renderWhatsapp(w) {
+    waError.textContent = '';
+    const available = Boolean(w?.available);
+    waPhone.disabled = !available;
+    waLinkBtn.disabled = !available;
+    waUnlinkBtn.hidden = !w?.phone;
+    waLinkBtn.textContent = w?.phone ? 'Cambiar' : 'Vincular';
+    waPhone.value = w?.phone ? formatPhone(w.phone) : '';
+    if (w?.phone) {
+      waStatus.textContent = `Vinculado: ${formatPhone(w.phone)}. Desde ese número puedes crear y cambiar las imágenes de este carrusel por WhatsApp.`;
+    } else if (available) {
+      waStatus.textContent = 'Escribe tu número de WhatsApp para crear y cambiar las imágenes de este carrusel desde ahí.';
+    } else {
+      waStatus.textContent = 'La vinculación de WhatsApp todavía no está disponible.';
+    }
+  }
+
+  async function loadWhatsapp(userId) {
+    waUserId = userId;
+    waStatus.textContent = 'Cargando…';
+    try {
+      renderWhatsapp((await API.getWhatsapp(userId)).data);
+    } catch (err) {
+      renderWhatsapp(null);
+      waError.textContent = err.message;
+    }
+  }
+
+  waLinkBtn.addEventListener('click', async () => {
+    waError.textContent = '';
+    const digits = waPhone.value.replace(/\D/g, '');
+    if (digits.length < 10) {
+      waError.textContent = 'Escribe los 10 dígitos del número';
+      return;
+    }
+    waLinkBtn.disabled = true;
+    try {
+      const res = await API.linkWhatsapp(waUserId, waPhone.value);
+      renderWhatsapp(res.data);
+      const row = waUserId && superAdminUsers.find((u) => u.userId === waUserId);
+      if (row) Object.assign(row, { whatsappPhone: res.data.phone, hasToken: true });
+      toast('WhatsApp vinculado');
+    } catch (err) {
+      waError.textContent = err.message;
+    } finally {
+      waLinkBtn.disabled = waPhone.disabled;
+    }
+  });
+
+  // Enter en el número vincula en vez de enviar el formulario de ajustes.
+  waPhone.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); waLinkBtn.click(); }
+  });
+
+  waUnlinkBtn.addEventListener('click', async () => {
+    if (!confirm('¿Desvincular este número? Ya no podrá crear ni cambiar imágenes de este carrusel por WhatsApp.')) return;
+    waUnlinkBtn.disabled = true;
+    try {
+      const res = await API.unlinkWhatsapp(waUserId);
+      renderWhatsapp(res.data);
+      const row = waUserId && superAdminUsers.find((u) => u.userId === waUserId);
+      if (row) row.whatsappPhone = null;
+      toast('WhatsApp desvinculado');
+    } catch (err) {
+      waError.textContent = err.message;
+    } finally {
+      waUnlinkBtn.disabled = false;
+    }
+  });
+
   function renderTokenStatus(user) {
     if (user.hasToken) {
       const when = user.tokenCreatedAt ? ` · creado el ${new Date(user.tokenCreatedAt).toLocaleString()}` : '';
@@ -912,7 +1251,9 @@ function escapeHtml(str) {
     const userId = settingsUserId;
     if (!userId) return;
     const user = superAdminUsers.find((u) => u.userId === userId) || { userId };
-    const question = user.hasToken
+    const question = user.whatsappPhone
+      ? `¿Regenerar el token de ${userId}? Tiene WhatsApp vinculado: el token nuevo se guarda solo en n8n.`
+      : user.hasToken
       ? `¿Regenerar el token de ${userId}? El token actual dejará de funcionar y habrá que pegar el nuevo en n8n.`
       : `¿Generar el token de ${userId}? Desde ese momento n8n tendrá que firmar con él las peticiones de este carrusel.`;
     if (!confirm(question)) return;
@@ -923,7 +1264,9 @@ function escapeHtml(str) {
       renderTokenStatus(user);
       openSecretReveal({
         title: `Token de ${userId}`,
-        hint: 'Cópialo ahora y pégalo en la fila de este cliente en n8n. No se podrá volver a ver: si lo pierdes, regenera uno nuevo.',
+        hint: user.whatsappPhone
+          ? 'Ya quedó guardado en la fila de su número en n8n; no hace falta pegarlo. No se podrá volver a ver.'
+          : 'Cópialo ahora y pégalo en la fila de este cliente en n8n. No se podrá volver a ver: si lo pierdes, regenera uno nuevo.',
         label: 'Token',
         value: res.data.token,
       });
@@ -1057,9 +1400,15 @@ function escapeHtml(str) {
       settingsFormError.textContent = 'El límite de almacenamiento debe ser un número entero de MB (1 o más)';
       return;
     }
+    const imageRaw = setImageLimit.value.trim();
+    const monthlyImageLimit = imageRaw === '' ? null : Number(imageRaw);
+    if (monthlyImageLimit !== null && (!Number.isInteger(monthlyImageLimit) || monthlyImageLimit < 0 || monthlyImageLimit > 100000)) {
+      settingsFormError.textContent = 'El tope de imágenes debe ser un número entero entre 0 y 100000';
+      return;
+    }
     settingsSaveBtn.disabled = true; settingsSaveBtn.textContent = 'Guardando…';
     try {
-      await API.updateUser(userId, { name, email, storageLimitMb });
+      await API.updateUser(userId, { name, email, storageLimitMb, monthlyImageLimit });
       let newPassword = null;
       if (pwd) {
         const res = await API.changeUserPassword(userId, pwd);
@@ -1182,6 +1531,7 @@ function escapeHtml(str) {
     editingImgId = image ? image.id : null;
     imgModalTitle.textContent = image ? 'Editar imagen' : 'Añadir imagen';
     imgUrl.value = image ? image.url : '';
+    imgUrlField.hidden = Boolean(image); // al editar no se cambia la URL
     imgAlt.value = image ? image.alt : '';
     imgView = (image && image.view) ? image.view : 'auto';
     markSeg(viewSeg, imgView);
@@ -1190,11 +1540,12 @@ function escapeHtml(str) {
     markDays(Array.isArray(schedule.days) ? schedule.days : []);
     imgFrom.value = schedule.from || '';
     imgTo.value = schedule.to || '';
+    markAlways();
     imgBlur.checked = Boolean(image && image.blur);
     imgSuspended.checked = Boolean(image && image.suspended);
     imgFormError.textContent = '';
     imgModalBackdrop.classList.add('is-open');
-    setTimeout(() => imgUrl.focus(), 60);
+    setTimeout(() => (image ? imgAlt : imgUrl).focus(), 60);
   }
 
   function closeImgModal() {
@@ -1207,14 +1558,24 @@ function escapeHtml(str) {
     imgDaysSeg.querySelectorAll('.seg__btn').forEach((b) => b.classList.toggle('is-active', days.includes(Number(b.dataset.day))));
   }
   const selectedDays = () => [...imgDaysSeg.querySelectorAll('.seg__btn.is-active')].map((b) => Number(b.dataset.day));
+  // «Siempre» queda marcado mientras no haya días ni fechas
+  function markAlways() {
+    const always = !selectedDays().length && !imgFrom.value && !imgTo.value;
+    imgScheduleClear.classList.toggle('is-active', always);
+    imgScheduleClear.setAttribute('aria-pressed', String(always));
+  }
   imgDaysSeg.addEventListener('click', (e) => {
     const b = e.target.closest('.seg__btn');
     if (b) b.classList.toggle('is-active');
+    markAlways();
   });
+  imgFrom.addEventListener('input', markAlways);
+  imgTo.addEventListener('input', markAlways);
   imgScheduleClear.addEventListener('click', () => {
     markDays([]);
     imgFrom.value = '';
     imgTo.value = '';
+    markAlways();
   });
 
   addImgBtn.addEventListener('click', () => openImgModal());
@@ -1225,8 +1586,11 @@ function escapeHtml(str) {
   imgModalForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     imgFormError.textContent = '';
-    const payload = { url: imgUrl.value.trim(), alt: imgAlt.value.trim(), view: imgView || 'auto' };
-    if (!payload.url) { imgFormError.textContent = 'La URL es obligatoria'; return; }
+    const payload = { alt: imgAlt.value.trim(), view: imgView || 'auto' };
+    if (!editingImgId) {
+      payload.url = imgUrl.value.trim();
+      if (!payload.url) { imgFormError.textContent = 'La URL es obligatoria'; return; }
+    }
     try {
       payload.duration = readDuration(imgDuration);
     } catch (err) {
@@ -1478,5 +1842,10 @@ function escapeHtml(str) {
     uploadFiles(e.dataTransfer.files);
   });
 
-  checkAuth();
+  // Si el enlace del correo se abre en la pestaña donde ya está el panel, solo cambia el #.
+  window.addEventListener('hashchange', () => {
+    if (/^#(verificar|restablecer)=/.test(location.hash)) startup();
+  });
+
+  startup();
 })();

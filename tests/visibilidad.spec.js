@@ -48,11 +48,26 @@ test('programar por días y fechas y encender el difuminado desde «Editar image
   await expect(page.locator('#imgBlur')).not.toBeChecked();
   await expect(page.locator('#imgSuspended')).not.toBeChecked();
   await expect(page.locator('#imgDaysSeg .seg__btn.is-active')).toHaveCount(0);
+  await expect(page.locator('#imgScheduleClear')).toHaveClass(/is-active/);
+
+  // Los siete días van en una sola hilera y «Siempre» queda centrado
+  const tops = await page.locator('#imgDaysSeg .seg__btn').evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().top)));
+  expect(tops).toHaveLength(7);
+  expect(new Set(tops).size).toBe(1);
+  const centros = await page.evaluate(() => {
+    const c = (el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; };
+    return [c(document.getElementById('imgScheduleClear')), c(document.getElementById('imgDaysSeg'))];
+  });
+  expect(Math.abs(centros[0] - centros[1])).toBeLessThan(2);
 
   await page.locator('#imgBlur').check();
   await page.locator('#imgDaysSeg [data-day="5"]').click();
+  await expect(page.locator('#imgScheduleClear')).not.toHaveClass(/is-active/);
   await page.locator('#imgDaysSeg [data-day="1"]').click();
   await page.locator('#imgDaysSeg [data-day="1"]').click(); // se puede desmarcar
+  await page.locator('#imgDaysSeg [data-day="5"]').click();
+  await expect(page.locator('#imgScheduleClear')).toHaveClass(/is-active/); // sin días vuelve a «siempre»
+  await page.locator('#imgDaysSeg [data-day="5"]').click();
   await page.fill('#imgFrom', '2020-01-01');
   await page.fill('#imgTo', '2020-12-31');
   await page.screenshot({ path: testInfo.outputPath('modal.png') });
@@ -84,7 +99,10 @@ test('programar por días y fechas y encender el difuminado desde «Editar image
   await expect(page.locator('#imgModalBackdrop')).toHaveClass(/is-open/);
 
   // «Siempre» limpia días y fechas
+  await expect(page.locator('#imgScheduleClear')).not.toHaveClass(/is-active/);
   await page.click('#imgScheduleClear');
+  await expect(page.locator('#imgScheduleClear')).toHaveClass(/is-active/);
+  await expect(page.locator('#imgScheduleClear')).toHaveCSS('background-color', 'rgb(232, 176, 75)');
   await expect(page.locator('#imgDaysSeg .seg__btn.is-active')).toHaveCount(0);
   await expect(page.locator('#imgFrom')).toHaveValue('');
   await expect(page.locator('#imgTo')).toHaveValue('');

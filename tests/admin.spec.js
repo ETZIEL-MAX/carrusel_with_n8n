@@ -84,18 +84,30 @@ test('subir imagen desde el admin la guarda como WebP', async ({ page }) => {
   expect((await img.body()).length).toBeLessThan(png.length);
 });
 
-test('orientación por imagen: "Girar 90°" se guarda y se ve en el badge', async ({ page }) => {
+test('orientación por imagen: solo Auto / Horizontal / Vertical; se guarda y se ve en el badge', async ({ page }) => {
   await uiLogin(page);
   const card = page.locator('#userGrid .image-card').last();
+  const url = await card.locator('.image-card__url').textContent();
   await card.locator('button[data-action="edit"]').click();
   await expect(page.locator('#imgModalBackdrop')).toHaveClass(/is-open/);
-  await page.click('#viewSeg .seg__btn[data-value="rotate"]');
+  // Al editar no se muestra la URL
+  await expect(page.locator('#imgUrl')).toBeHidden();
+  await expect(page.locator('#viewSeg .seg__btn')).toHaveText(['Auto', 'Horizontal', 'Vertical']);
+  await expect(page.locator('#viewSeg [data-value="auto"]')).toHaveClass(/is-active/);
+  await page.click('#viewSeg .seg__btn[data-value="vertical"]');
   await page.click('#imgSaveBtn');
-  await expect(page.locator('#userGrid .image-card').last().locator('.image-card__order')).toContainText('Girar 90°');
+  await expect(page.locator('#userGrid .image-card').last().locator('.image-card__order')).toContainText('Vertical');
 
   const id = await page.locator('#userGrid .image-card').last().getAttribute('data-id');
   const list = await (await page.request.get('/api/carrusel?userId=USER1')).json();
-  expect(list.data.images.find((i) => i.id === id).view).toBe('rotate');
+  const saved = list.data.images.find((i) => i.id === id);
+  expect(saved.view).toBe('vertical');
+  expect(saved.url).toBe(url); // la URL no cambia al editar
+
+  // Al añadir una imagen la URL sí se pide
+  await page.click('#addImgBtn');
+  await expect(page.locator('#imgUrl')).toBeVisible();
+  await page.click('#imgCancelBtn');
 });
 
 test('duración: por imagen y por defecto se guardan y llegan al carrusel', async ({ page }) => {

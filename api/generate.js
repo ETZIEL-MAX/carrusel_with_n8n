@@ -4,6 +4,9 @@ import {
   getClientIp,
   resolveUserId,
   getGenerationSettings,
+  getGenerationQuota,
+  appBaseUrl,
+  isAllowedN8nUrl,
   errorResponse,
   successResponse,
 } from './_utils.js';
@@ -26,14 +29,21 @@ export async function POST(request) {
 
   const settings = await getGenerationSettings(userId);
   if (!settings) return errorResponse('User not found', 404);
+
+  const quota = await getGenerationQuota(userId);
+  if (quota.remaining === 0) {
+    return errorResponse(`Llegaste al límite de ${quota.limit} imágenes de este mes`, 429, { quota });
+  }
   if (!settings.n8nGenerationWebhook) {
     return errorResponse('No n8n generation webhook configured. Save one in Configuración first.', 400);
   }
 
-  const origin = request.headers.get('origin') || '';
-  const host = request.headers.get('host') || '';
-  const proto = request.headers.get('x-forwarded-proto')?.split(',')[0].trim() || 'https';
-  const baseUrl = origin.startsWith('http') ? origin : `${proto}://${host}`;
+  if (!isAllowedN8nUrl(settings.n8nGenerationWebhook)) {
+    return errorResponse('El webhook de generación no está en N8N_ALLOWED_HOSTS', 400);
+  }
+
+  const baseUrl = appBaseUrl(request);
+  if (!baseUrl) return errorResponse('Falta configurar APP_URL en el servidor', 500);
   const carouselWebhookUrl = `${baseUrl}/api/webhook/${userId}`;
 
   const n8nPayload = {

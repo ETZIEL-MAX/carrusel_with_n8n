@@ -58,8 +58,80 @@
               <input type="password" id="userPassword" name="userPassword" autocomplete="current-password" required />
             </div>
             <p class="error-text" id="userLoginError"></p>
+            <p class="ok-text" id="userLoginOk" hidden></p>
             <button class="btn btn--primary" type="submit" id="userLoginBtn">Entrar como Usuario</button>
           </form>
+          <div class="login-links">
+            <button class="link-btn" type="button" id="showForgotBtn" hidden>¿Olvidaste tu contraseña?</button>
+            <button class="link-btn" type="button" id="showSignupBtn" hidden>¿No tienes cuenta? <strong>Crear cuenta</strong></button>
+          </div>
+        </div>
+
+        <!-- Crear cuenta -->
+        <div class="login-panel" id="panelSignup">
+          <form id="signupForm">
+            <div class="field">
+              <label for="signupName">Nombre</label>
+              <input type="text" id="signupName" maxlength="120" autocomplete="name" required />
+            </div>
+            <div class="field">
+              <label for="signupEmail">Correo electrónico</label>
+              <input type="email" id="signupEmail" placeholder="tu@correo.com" autocomplete="email" required />
+            </div>
+            <div class="field">
+              <label for="signupPassword">Contraseña (mínimo 10 caracteres)</label>
+              <input type="password" id="signupPassword" minlength="10" maxlength="200" autocomplete="new-password" required />
+            </div>
+            <div class="field">
+              <label for="signupPassword2">Repite la contraseña</label>
+              <input type="password" id="signupPassword2" minlength="10" maxlength="200" autocomplete="new-password" required />
+            </div>
+            <div class="captcha" id="signupCaptcha"></div>
+            <p class="error-text" id="signupError"></p>
+            <button class="btn btn--primary" type="submit" id="signupBtn">Crear cuenta</button>
+          </form>
+          <p class="ok-text account-done" id="signupDone" hidden></p>
+          <div class="login-links">
+            <button class="link-btn" type="button" data-back-login>Ya tengo cuenta: <strong>Entrar</strong></button>
+          </div>
+        </div>
+
+        <!-- Olvidé mi contraseña -->
+        <div class="login-panel" id="panelForgot">
+          <form id="forgotForm">
+            <p class="login-panel-intro">Escribe el correo de tu cuenta y te mandaremos un enlace para poner una contraseña nueva.</p>
+            <div class="field">
+              <label for="forgotEmail">Correo electrónico</label>
+              <input type="email" id="forgotEmail" placeholder="tu@correo.com" autocomplete="email" required />
+            </div>
+            <div class="captcha" id="forgotCaptcha"></div>
+            <p class="error-text" id="forgotError"></p>
+            <button class="btn btn--primary" type="submit" id="forgotBtn">Enviar enlace</button>
+          </form>
+          <p class="ok-text account-done" id="forgotDone" hidden></p>
+          <div class="login-links">
+            <button class="link-btn" type="button" data-back-login>Volver a <strong>Entrar</strong></button>
+          </div>
+        </div>
+
+        <!-- Poner contraseña nueva (desde el enlace del correo) -->
+        <div class="login-panel" id="panelReset">
+          <form id="resetForm">
+            <p class="login-panel-intro">Escribe tu contraseña nueva. Se cerrarán las sesiones abiertas en otros dispositivos.</p>
+            <div class="field">
+              <label for="resetPassword">Contraseña nueva (mínimo 10 caracteres)</label>
+              <input type="password" id="resetPassword" minlength="10" maxlength="200" autocomplete="new-password" required />
+            </div>
+            <div class="field">
+              <label for="resetPassword2">Repite la contraseña</label>
+              <input type="password" id="resetPassword2" minlength="10" maxlength="200" autocomplete="new-password" required />
+            </div>
+            <p class="error-text" id="resetError"></p>
+            <button class="btn btn--primary" type="submit" id="resetBtn">Guardar contraseña</button>
+          </form>
+          <div class="login-links">
+            <button class="link-btn" type="button" data-back-login>Volver a <strong>Entrar</strong></button>
+          </div>
         </div>
       </div>
     </div>
@@ -88,6 +160,19 @@
         <div class="plan-card__controls">
           <input type="number" id="priceInput" name="priceInput" min="0" max="100" step="0.01" inputmode="decimal" placeholder="0.06" />
           <button class="btn" type="submit" id="priceSaveBtn">Guardar</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="plan-panel">
+      <form class="plan-card plan-card--row" id="limitForm" novalidate>
+        <div>
+          <label class="plan-card__label" for="limitInput">Tope de imágenes generadas al mes</label>
+          <p class="hint">Para cada cuenta que no tenga un tope propio. Vacío = sin tope. Al llegar al tope el bot avisa y deja de generar hasta el mes siguiente.</p>
+        </div>
+        <div class="plan-card__controls">
+          <input type="number" id="limitInput" name="limitInput" min="0" max="100000" step="1" inputmode="numeric" placeholder="Sin tope" />
+          <button class="btn" type="submit" id="limitSaveBtn">Guardar</button>
         </div>
       </form>
     </div>
@@ -229,6 +314,11 @@
           <input type="number" id="setStorageLimit" name="setStorageLimit" min="1" step="1" inputmode="numeric" placeholder="500" />
           <p class="hint" id="setStorageHint">Déjalo vacío para usar el límite por defecto.</p>
         </div>
+        <div class="field">
+          <label for="setImageLimit">Tope propio de imágenes al mes</label>
+          <input type="number" id="setImageLimit" name="setImageLimit" min="0" max="100000" step="1" inputmode="numeric" />
+          <p class="hint" id="setImageLimitHint">Déjalo vacío para usar el tope general.</p>
+        </div>
 
         <h3 class="modal__section">Token de n8n</h3>
         <p class="hint">Secreto propio de este carrusel: con él n8n firma lo que envía. Se muestra <strong>una sola vez</strong> al generarlo. Para volver a verlo hay que regenerarlo, y el anterior deja de funcionar.</p>
@@ -263,6 +353,20 @@
         <div class="field">
           <div class="copy-row"><pre class="copy-code copy-code--tall" id="n8nBlock"></pre><button class="btn btn--primary" type="button" data-copy="n8nBlock">Copiar bloque n8n</button></div>
         </div>
+      </div>
+
+      <div id="whatsappSection">
+        <h3 class="modal__section">WhatsApp</h3>
+        <p class="hint" id="waStatus">Cargando…</p>
+        <div class="field">
+          <label for="waPhone">Número de WhatsApp (10 dígitos)</label>
+          <div class="wa-row">
+            <input type="tel" id="waPhone" inputmode="tel" autocomplete="tel" placeholder="81 1234 5678" maxlength="20" />
+            <button class="btn" type="button" id="waLinkBtn">Vincular</button>
+            <button class="btn btn--danger" type="button" id="waUnlinkBtn" hidden>Desvincular</button>
+          </div>
+        </div>
+        <p class="error-text" id="waError"></p>
       </div>
 
       <h3 class="modal__section" id="genSection">Generación</h3>
@@ -319,7 +423,7 @@
   <div class="modal-backdrop" id="imgModalBackdrop">
     <form class="modal" id="imgModalForm" novalidate>
       <h2 id="imgModalTitle">Añadir imagen</h2>
-      <div class="field">
+      <div class="field" id="imgUrlField">
         <label for="imgUrl">URL de la imagen</label>
         <input type="url" id="imgUrl" name="imgUrl" placeholder="https://..." required />
       </div>
@@ -329,13 +433,12 @@
       </div>
       <div class="field">
         <label>Orientación en el carrusel</label>
-        <div class="seg seg--wrap" id="viewSeg">
+        <div class="seg seg--even" id="viewSeg">
           <button class="seg__btn" type="button" data-value="auto">Auto</button>
           <button class="seg__btn" type="button" data-value="horizontal">Horizontal</button>
           <button class="seg__btn" type="button" data-value="vertical">Vertical</button>
-          <button class="seg__btn" type="button" data-value="rotate">↻ Girar 90°</button>
         </div>
-        <p class="hint">Auto = se detecta sola. "Girar 90°" es para TV colocada en vertical.</p>
+        <p class="hint">Auto = se detecta sola.</p>
       </div>
       <div class="field">
         <label for="imgDuration">Duración en pantalla (segundos)</label>
@@ -344,7 +447,7 @@
       </div>
       <div class="field">
         <label>Cuándo se muestra</label>
-        <div class="seg seg--wrap" id="imgDaysSeg">
+        <div class="seg seg--even" id="imgDaysSeg">
           <button class="seg__btn" type="button" data-day="1">Lun</button>
           <button class="seg__btn" type="button" data-day="2">Mar</button>
           <button class="seg__btn" type="button" data-day="3">Mié</button>
@@ -362,7 +465,9 @@
             <label for="imgTo">Hasta</label>
             <input type="date" id="imgTo" name="imgTo" />
           </span>
-          <button class="btn" type="button" id="imgScheduleClear">Siempre</button>
+        </div>
+        <div class="seg seg--center">
+          <button class="seg__btn" type="button" id="imgScheduleClear" aria-pressed="true">Siempre</button>
         </div>
         <p class="hint">Sin días ni fechas, la imagen se muestra siempre. Se pueden combinar: «viernes» entre dos fechas.</p>
       </div>

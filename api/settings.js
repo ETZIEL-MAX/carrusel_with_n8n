@@ -3,6 +3,7 @@ import {
   checkRateLimit,
   getClientIp,
   resolveUserId,
+  isSuperAdmin,
   getGenerationSettings,
   updateUserSettings,
   errorResponse,
@@ -56,6 +57,11 @@ export async function PATCH(request) {
 
   if (googleDriveFolder === undefined && colorPalette === undefined && n8nGenerationWebhook === undefined && defaultOrientation === undefined && posterResolution === undefined && slideDuration === undefined) {
     return errorResponse('Nothing to update', 400);
+  }
+
+  // El servidor hace POST a esta URL: solo el super-admin puede cambiarla.
+  if (n8nGenerationWebhook !== undefined && !isSuperAdmin(auth.payload)) {
+    return errorResponse('Solo el super-admin puede cambiar el webhook de generación', 403);
   }
 
   try {

@@ -119,6 +119,15 @@ export async function tempExists(key) {
   return Boolean(tempGet(key));
 }
 
+// Lee y borra la llave en un solo paso: dos peticiones con el mismo token no
+// pueden usarlo las dos. Devuelve el valor guardado o null.
+export async function tempTake(key) {
+  if (!LOCAL) return redis.getDel(key);
+  const rec = tempGet(key);
+  localTemp.delete(key);
+  return rec ? String(rec.value) : null;
+}
+
 export async function tempDelete(key) {
   if (!LOCAL) return redisDel(key);
   localTemp.delete(key);

@@ -17,6 +17,7 @@ services:
     env_file: .env.prod
     environment:
       NODE_ENV: production
+      APP_URL: "https://carrusel.etziel.com"
       LOCAL_STORAGE: "0"
       IMAGE_STORAGE: "local"
       REDIS_URL: "redis://redis:6379"

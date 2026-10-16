@@ -49,6 +49,27 @@ export function getClientIp(request) {
   return raw.split(',')[0].trim() || 'unknown';
 }
 
+// URL pública del sitio para armar enlaces (correos, URL de vuelta para n8n). Sale de
+// APP_URL y nunca del header Host, que el cliente controla. Sin APP_URL, solo fuera de
+// producción se usa el Host (dev y tests). Devuelve null si no se puede saber.
+export function appBaseUrl(request) {
+  const fromEnv = String(process.env.APP_URL || '').trim().replace(/\/+$/, '');
+  if (fromEnv) return fromEnv;
+  if (process.env.NODE_ENV === 'production' || !request) return null;
+  const host = request.headers.get('host');
+  return host ? `http://${host}` : null;
+}
+
+// Webhooks de n8n a los que el servidor puede llamar: solo hosts de N8N_ALLOWED_HOSTS.
+export function isAllowedN8nUrl(raw) {
+  let url;
+  try { url = new URL(String(raw)); } catch { return false; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  const allowed = String(process.env.N8N_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return allowed.includes(url.hostname.toLowerCase());
+}
+
 // ==================== Configuración global (super-admin) ====================
 
 const CONFIG_KEY = 'carousel:config';
@@ -330,7 +351,43 @@ export const MIN_PASSWORD = 10;
 export const PASSWORD_ERROR = `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres`;
 export const isValidNewPassword = (p) => typeof p === 'string' && p.length >= MIN_PASSWORD && p.length <= 200;
 
-export async function createUser({ name, email, password }) {
+// ---- Candado de carousel:users ----
+// Los usuarios viven en un solo JSON que se lee, se cambia y se vuelve a escribir. Con el
+// registro abierto dos altas a la vez podrían pisarse o tomar el mismo USERn, así que toda
+// escritura pasa por aquí. No es reentrante: una función con candado no llama a otra.
+const USERS_LOCK = 'carousel:lock:users';
+const USERS_LOCK_TTL = 15;
+const USERS_LOCK_WAIT_MS = 10000;
+const USER_SEQ_KEY = 'carousel:userSeq'; // último número de USERn asignado
+
+export async function withUsersLock(fn) {
+  const deadline = Date.now() + USERS_LOCK_WAIT_MS;
+  while (!(await setOnce(USERS_LOCK, USERS_LOCK_TTL))) {
+    if (Date.now() > deadline) {
+      const err = new Error('Usuarios ocupados, inténtalo de nuevo');
+      err.code = 'USERS_BUSY';
+      throw err;
+    }
+    await new Promise((r) => setTimeout(r, 20 + Math.random() * 40));
+  }
+  try {
+    return await fn();
+  } finally {
+    await tempDelete(USERS_LOCK);
+  }
+}
+
+const locked = (fn) => (...args) => withUsersLock(() => fn(...args));
+
+export const updateUser = locked(updateUserUnlocked);
+export const updateUserPassword = locked(updateUserPasswordUnlocked);
+export const bumpUserSessionVersion = locked(bumpUserSessionVersionUnlocked);
+export const generateClientToken = locked(generateClientTokenUnlocked);
+export const updateUserSettings = locked(updateUserSettingsUnlocked);
+
+// Alta de usuario. Recibe `password` (se hashea aquí) o `passwordHash` ya calculado
+// (registro propio: la clave se hashea al registrarse, no al verificar el correo).
+export async function createUser({ name, email, password, passwordHash, createdBy }) {
   const cleanName = String(name || '').trim();
   if (!cleanName || cleanName.length > 120) {
     throw new Error('Invalid name');
@@ -338,39 +395,59 @@ export async function createUser({ name, email, password }) {
   if (!validateEmail(email)) {
     throw new Error('Invalid email');
   }
-  if (!isValidNewPassword(password)) {
+  if (!passwordHash && !isValidNewPassword(password)) {
     throw new Error(PASSWORD_ERROR);
   }
-  const cleanEmail = normalizeEmail(email);
-  const existing = await findUserByEmail(cleanEmail);
-  if (existing) {
-    const err = new Error('Email already in use');
-    err.code = 'EMAIL_TAKEN';
-    throw err;
+  if (!passwordHash) {
+    const { hash } = await import('@node-rs/argon2');
+    passwordHash = await hash(password);
   }
+  const cleanEmail = normalizeEmail(email);
 
-  const users = await getUsers();
-  const existingIds = Object.keys(users).map(k => parseInt(k.replace('USER', ''), 10)).filter(n => !isNaN(n));
-  const nextNum = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
-  const userId = `USER${nextNum}`;
-
-  const { hash } = await import('@node-rs/argon2');
-  const passwordHash = await hash(password);
-
-  users[userId] = {
-    name: cleanName,
-    email: cleanEmail,
-    passwordHash,
-    createdAt: new Date().toISOString(),
-  };
-  await saveUsers(users);
+  const userId = await withUsersLock(async () => {
+    const users = await getUsers();
+    const taken = Object.values(users).some((u) => u && typeof u.email === 'string' && normalizeEmail(u.email) === cleanEmail);
+    if (taken) {
+      const err = new Error('Email already in use');
+      err.code = 'EMAIL_TAKEN';
+      throw err;
+    }
+    // El número nunca se reutiliza: un USERn borrado puede seguir en pantallas
+    // (/carrusel/USERn) y en las filas de n8n, y no debe pasar a otra cuenta.
+    const existingIds = Object.keys(users).map(k => parseInt(k.replace('USER', ''), 10)).filter(n => !isNaN(n));
+    const last = Math.max(0, ...existingIds, Number(await getJson(USER_SEQ_KEY)) || 0);
+    const id = `USER${last + 1}`;
+    await setJson(USER_SEQ_KEY, last + 1);
+    users[id] = {
+      name: cleanName,
+      email: cleanEmail,
+      passwordHash,
+      createdAt: new Date().toISOString(),
+      ...(createdBy ? { createdBy } : {}),
+    };
+    await saveUsers(users);
+    return id;
+  });
   return { userId, name: cleanName, email: cleanEmail, password };
 }
 
-export async function updateUser(userId, { name, email, storageLimitMb }) {
+async function updateUserUnlocked(userId, { name, email, storageLimitMb, monthlyImageLimit }) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;
+
+  // Tope mensual propio de imágenes; null o '' = usar el global.
+  if (monthlyImageLimit !== undefined) {
+    if (monthlyImageLimit === null || monthlyImageLimit === '') {
+      delete users[id].monthlyImageLimit;
+    } else if (!isValidImageLimit(monthlyImageLimit)) {
+      const err = new Error(`El tope mensual debe ser un número entero entre 0 y ${MAX_MONTHLY_IMAGES}`);
+      err.code = 'INVALID_LIMIT';
+      throw err;
+    } else {
+      users[id].monthlyImageLimit = monthlyImageLimit;
+    }
+  }
 
   // null o '' = volver al límite por defecto del servidor.
   if (storageLimitMb !== undefined) {
@@ -417,11 +494,15 @@ export async function updateUser(userId, { name, email, storageLimitMb }) {
 }
 
 export async function deleteUser(userId) {
-  const users = await getUsers();
   const id = sanitizeUserId(userId);
-  if (!users[id]) return false;
-  delete users[id];
-  await saveUsers(users);
+  const removed = await withUsersLock(async () => {
+    const users = await getUsers();
+    if (!users[id]) return false;
+    delete users[id];
+    await saveUsers(users);
+    return true;
+  });
+  if (!removed) return false;
   // Borrar los archivos de las imágenes del usuario antes de quitar su lista.
   try {
     const imgs = await getImages(id);
@@ -462,7 +543,7 @@ export async function verifyUserLogin(email, password) {
   return valid ? { userId: found.userId, name: found.name, email: found.email } : null;
 }
 
-export async function updateUserPassword(userId, password) {
+async function updateUserPasswordUnlocked(userId, password) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return false;
@@ -476,7 +557,7 @@ export async function updateUserPassword(userId, password) {
   return true;
 }
 
-export async function bumpUserSessionVersion(userId) {
+async function bumpUserSessionVersionUnlocked(userId) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return false;
@@ -518,11 +599,54 @@ function decryptSecret(stored) {
 
 // Crea (o reemplaza) el token del cliente. Devuelve el token en claro: es la única vez
 // que sale del servidor. El anterior deja de funcionar en ese momento.
-export async function generateClientToken(userId) {
+export const newClientToken = () => `crt_${randomBytes(32).toString('base64url')}`;
+
+// ==================== Número de WhatsApp vinculado ====================
+// El flujo de n8n identifica al cliente por los últimos 10 dígitos del número
+// (así da igual si WhatsApp lo manda como 52… o 521…). Aquí se guarda igual.
+export function normalizePhone(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return null;
+  return digits.slice(-10);
+}
+
+// userId que ya tiene ese número (distinto de `exceptId`) o null.
+export function phoneOwner(users, phone, exceptId = null) {
+  for (const [id, u] of Object.entries(users)) {
+    if (id !== exceptId && u?.whatsappPhone === phone) return id;
+  }
+  return null;
+}
+
+// Guarda (o quita, con phone = null) el número y, si se da, el token nuevo, en un solo paso.
+// Devuelve { user } o { error: 'NOT_FOUND' | 'PHONE_TAKEN' }.
+async function setWhatsappUnlocked(userId, { phone, token }) {
+  const users = await getUsers();
+  const id = sanitizeUserId(userId);
+  if (!users[id]) return { error: 'NOT_FOUND' };
+  if (phone) {
+    if (phoneOwner(users, phone, id)) return { error: 'PHONE_TAKEN' };
+    users[id].whatsappPhone = phone;
+    users[id].whatsappLinkedAt = new Date().toISOString();
+  } else {
+    delete users[id].whatsappPhone;
+    delete users[id].whatsappLinkedAt;
+  }
+  if (token) {
+    users[id].webhookTokenEnc = encryptSecret(token);
+    users[id].webhookTokenHint = token.slice(-4);
+    users[id].webhookTokenCreatedAt = new Date().toISOString();
+  }
+  users[id].updatedAt = new Date().toISOString();
+  await saveUsers(users);
+  return { user: { userId: id, ...users[id] } };
+}
+export const setWhatsapp = (...args) => withUsersLock(() => setWhatsappUnlocked(...args));
+
+async function generateClientTokenUnlocked(userId, token = newClientToken()) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;
-  const token = `crt_${randomBytes(32).toString('base64url')}`;
   users[id].webhookTokenEnc = encryptSecret(token);
   users[id].webhookTokenHint = token.slice(-4);
   users[id].webhookTokenCreatedAt = new Date().toISOString();
@@ -757,6 +881,39 @@ export async function recordUsage(userId, { eventId, kind, count, tokens, second
   return { duplicate: false, kind, count: n, tokens: t, seconds: secs };
 }
 
+// ==================== Tope mensual de imágenes generadas ====================
+// Global en carousel:config.monthlyImageLimit (null = sin tope; sin definir = MONTHLY_IMAGE_LIMIT
+// o 50) y, si existe, el propio del usuario (`monthlyImageLimit`), que manda sobre el global.
+// Se cuenta con `images` del consumo del mes, el mismo que reporta n8n.
+export const MAX_MONTHLY_IMAGES = 100000;
+const DEFAULT_MONTHLY_IMAGES = 50;
+
+export function isValidImageLimit(v) {
+  return v === null || (Number.isInteger(v) && v >= 0 && v <= MAX_MONTHLY_IMAGES);
+}
+
+export function globalImageLimit(cfg) {
+  if (cfg && 'monthlyImageLimit' in cfg) return cfg.monthlyImageLimit ?? null;
+  const fromEnv = parseInt(process.env.MONTHLY_IMAGE_LIMIT ?? '', 10);
+  return Number.isInteger(fromEnv) && fromEnv >= 0 ? fromEnv : DEFAULT_MONTHLY_IMAGES;
+}
+
+// { used, limit, remaining, own } — limit y remaining son null si no hay tope.
+export async function getGenerationQuota(userId, users = null) {
+  const id = sanitizeUserId(userId);
+  const all = users || (await getUsers());
+  const own = all[id]?.monthlyImageLimit;
+  const limit = Number.isInteger(own) ? own : globalImageLimit(await getConfig());
+  const used = (await hashGetAll(usageKey(id, currentMonth()))).images || 0;
+  return {
+    month: currentMonth(),
+    used,
+    limit,
+    remaining: limit === null ? null : Math.max(0, limit - used),
+    own: Number.isInteger(own) ? own : null,
+  };
+}
+
 export async function getUsageSummary(userId, month = currentMonth()) {
   const data = await hashGetAll(usageKey(sanitizeUserId(userId), month));
   const imagePriceUsd = imagePriceFrom(await getConfig());
@@ -826,7 +983,7 @@ export async function getGenerationSettings(userId) {
   };
 }
 
-export async function updateUserSettings(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration }) {
+async function updateUserSettingsUnlocked(userId, { googleDriveFolder, colorPalette, n8nGenerationWebhook, defaultOrientation, posterResolution, slideDuration }) {
   const users = await getUsers();
   const id = sanitizeUserId(userId);
   if (!users[id]) return null;

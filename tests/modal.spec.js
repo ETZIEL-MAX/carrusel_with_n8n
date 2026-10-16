@@ -65,7 +65,7 @@ for (const [nombre, viewport] of PANTALLAS) {
     test('«Editar imagen» deja bajar hasta el final', async ({ page }) => {
       await uiLogin(page);
       await page.locator('#userGrid .image-card').first().locator('[data-action="edit"]').click();
-      await revisarModal(page, { form: '#imgModalForm', primero: '#imgUrl', ultimo: '#imgSuspended', guardar: '#imgSaveBtn' });
+      await revisarModal(page, { form: '#imgModalForm', primero: '#imgAlt', ultimo: '#imgSuspended', guardar: '#imgSaveBtn' });
       // Y lo que se marca al fondo se guarda
       await page.locator('#imgBlur').check();
       await page.click('#imgSaveBtn');

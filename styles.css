@@ -622,6 +622,64 @@ a.btn {
   display: block;
 }
 
+/* Crear cuenta / recuperar contraseña */
+.login-panel form {
+  display: grid;
+  gap: 1rem;
+}
+
+.login-panel-intro {
+  color: var(--ink-dim);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.login-links {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  margin-top: 1.2rem;
+}
+
+.link-btn {
+  color: var(--ink-dim);
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  transition: color 0.2s;
+}
+
+.link-btn strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.link-btn:hover,
+.link-btn:focus-visible {
+  color: var(--ink);
+}
+
+.captcha:empty {
+  display: none;
+}
+
+.account-done {
+  line-height: 1.6;
+}
+
+/* Vincular WhatsApp (ajustes) */
+.wa-row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.wa-row input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
 @keyframes panel-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -708,6 +766,25 @@ a.btn {
   border-color: var(--accent);
   color: #0e0e10;
   font-weight: 600;
+}
+/* Una sola hilera: los botones se reparten el ancho (días de la semana, orientación) */
+.seg--even {
+  flex-wrap: nowrap;
+  gap: 0.3rem;
+}
+.seg--even .seg__btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.5rem 0;
+  text-align: center;
+  white-space: nowrap;
+}
+.seg--center {
+  justify-content: center;
+  margin-top: 0.6rem;
+}
+.seg--center .seg__btn {
+  padding: 0.5rem 1.6rem;
 }
 
 /* ==================== SUPER-ADMIN GRID ==================== */

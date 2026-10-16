@@ -16,7 +16,7 @@ import {
   MIN_DURATION, MAX_DURATION, DEFAULT_SLIDE_DURATION,
   verifyClientSignature, clientSignatureHasher, isHttpUrl, sniffImageType, normalizeUserId, getClientIp,
   saveUserFile, saveImageFromTemp, quotaErrorResponse, recordUsage, getUsageSummary, USAGE_KINDS,
-  checkRateLimit, errorResponse, successResponse, getGenerationSettings, normalizeFormat, normalizeResolution, posterSize, isVisibleAt, normalizeSchedule,
+  checkRateLimit, errorResponse, successResponse, getGenerationSettings, getGenerationQuota, normalizeFormat, normalizeResolution, posterSize, isVisibleAt, normalizeSchedule,
 } from './_utils.js';
 import { isLocal, isLocalImages, optimizeImage, uploadTempDir } from './_store.js';
 import { writeCapped, withUploadSlot, cleanupTemp } from './_stream.js';
@@ -194,6 +194,8 @@ export async function handleSettingsRead(request, rawUserId) {
       posterResolution: normalizeResolution(settings.posterResolution),
       posterWidth: size.width,
       posterHeight: size.height,
+      // Tope mensual: si remaining es 0, n8n contesta "llegaste a tu límite" y no genera.
+      quota: await getGenerationQuota(userId),
     },
     'Settings'
   );

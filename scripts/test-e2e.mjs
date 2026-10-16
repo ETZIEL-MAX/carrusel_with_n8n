@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
+import { createServer } from 'node:http';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = 3123;
@@ -43,6 +44,24 @@ async function waitReady(timeoutMs = 15000) {
   return false;
 }
 
+// n8n falso: recibe las altas y bajas de números de WhatsApp (flujo "Alta de número").
+const N8N_PORT = 3124;
+const N8N_KEY = 'test-numbers-key';
+const n8nCalls = [];
+let n8nFail = false;
+const n8nTaken = new Set(); // números que el n8n falso tiene con otro carrusel
+const n8nServer = createServer((req, res) => {
+  let raw = '';
+  req.on('data', (c) => { raw += c; });
+  req.on('end', () => {
+    const body = JSON.parse(raw || '{}');
+    n8nCalls.push({ key: req.headers['x-carrusel-key'], body });
+    if (n8nTaken.has(body.numero)) return res.writeHead(409).end('{"error":"otro carrusel"}');
+    res.writeHead(n8nFail ? 500 : 200, { 'content-type': 'application/json' }).end('{"ok":true}');
+  });
+});
+await new Promise((r) => n8nServer.listen(N8N_PORT, '127.0.0.1', r));
+
 const dataDir = await mkdtemp(join(tmpdir(), 'carousel-test-'));
 await mkdir(join(dataDir, 'uploads'), { recursive: true });
 await writeFile(join(dataDir, 'uploads', 'probe.png'), PNG);
@@ -57,6 +76,9 @@ const child = spawn(process.execPath, ['scripts/server.mjs'], {
     ADMIN_PASSWORD: PASSWORD,
     JWT_SECRET: 'test-jwt-secret-0123456789abcdef',
     WEBHOOK_SECRET,
+    TOKEN_ENC_KEY: 'test-token-enc-key-0123456789abcdef0123',
+    N8N_NUMBERS_WEBHOOK_URL: `http://127.0.0.1:${N8N_PORT}/alta`,
+    N8N_NUMBERS_SECRET: N8N_KEY,
     RATE_LIMIT_AUTH: '100',
     MANUAL_UPLOAD_MAX_BYTES: String(700 * 1024),
     UPLOAD_MAX_BYTES: String(900 * 1024),
@@ -346,6 +368,29 @@ async function runTests() {
   check('PATCH settings slideDuration 1 -> 400', r.status === 400, r.status);
   r = await fetch(BASE + '/api/carrusel?userId=USER1');
   check('  carrusel publica slideDuration 12', (await r.json()).data?.slideDuration === 12, r.status);
+
+  // Webhook de generación: el servidor le hace POST, así que solo lo fija el super-admin
+  // y solo se llama si su host está en N8N_ALLOWED_HOSTS.
+  r = await fetch(BASE + '/api/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: userCookie },
+    body: J({ n8nGenerationWebhook: 'http://169.254.169.254/latest' }),
+  });
+  check('usuario no puede fijar n8nGenerationWebhook (403)', r.status === 403, r.status);
+  r = await fetch(BASE + '/api/settings?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ n8nGenerationWebhook: 'https://no-permitido.test/hook' }),
+  });
+  check('super-admin sí puede fijarlo', r.status === 200, r.status);
+  r = await fetch(BASE + '/api/generate?userId=USER1', { method: 'POST', headers: { cookie: adminCookie } });
+  check('  generate con host fuera de N8N_ALLOWED_HOSTS -> 400', r.status === 400, r.status);
+  r = await fetch(BASE + '/api/settings?userId=USER1', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: adminCookie },
+    body: J({ n8nGenerationWebhook: null }),
+  });
+  check('  se quita el webhook', r.status === 200, r.status);
 
   // Resolución del póster (settings): HD, Full HD, 2K o 4K
   const settingsReq = (method, payload) => fetch(BASE + '/api/settings?userId=USER1', {
@@ -710,7 +755,7 @@ async function runTests() {
   check('DELETE unknown user -> 404', r.status === 404, r.status);
 
   // ---------- Token por cliente, espacio, consumo y sesiones ----------
-  // (USER3 se borró arriba, así que el siguiente usuario vuelve a ser USER3.)
+  // (USER3 se borró arriba; su número no se reutiliza, así que el siguiente usuario es USER4.)
   let ipN = 0;
   const ip = () => `10.9.${Math.floor(ipN / 250)}.${(ipN++ % 250) + 1}`; // IP nueva: esquiva el rate limit por IP
   const signClient = (token, b, ts) => createHmac('sha256', token).update(`${ts}.${b}`, 'utf8').digest('hex');
@@ -733,20 +778,20 @@ async function runTests() {
   console.log('\n== Token por cliente ==');
   r = await adminJson('/api/users', 'POST', { name: 'Cliente Token', email: 'token@example.com', password: 'cliente-token-1' });
   const tk = await r.json();
-  check('crear USER3 (cliente con token)', r.status === 200 && tk.data?.userId === 'USER3', r.status + ' ' + tk.data?.userId);
+  check('crear USER4 (cliente con token)', r.status === 200 && tk.data?.userId === 'USER4', r.status + ' ' + tk.data?.userId);
 
   r = await adminJson('/api/users', 'POST', { name: 'Corta', email: 'corta@example.com', password: '123456789' });
   check('contraseña de 9 caracteres -> 400', r.status === 400, r.status);
 
   // Sin token todavía: sigue valiendo la firma global antigua
   body = J({ images: [{ url: 'https://x.test/legacy.jpg' }] });
-  r = await fetch(BASE + '/api/webhook/USER3', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body), 'x-forwarded-for': ip() }, body });
+  r = await fetch(BASE + '/api/webhook/USER4', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body), 'x-forwarded-for': ip() }, body });
   check('sin token: firma global aceptada', r.status === 200, r.status);
 
-  r = await fetch(BASE + '/api/users/token?userId=USER3', { method: 'POST', headers: { cookie: userCookie, 'x-forwarded-for': ip() } });
+  r = await fetch(BASE + '/api/users/token?userId=USER4', { method: 'POST', headers: { cookie: userCookie, 'x-forwarded-for': ip() } });
   check('usuario normal no puede generar token -> 403', r.status === 403, r.status);
 
-  r = await adminJson('/api/users/token?userId=USER3', 'POST');
+  r = await adminJson('/api/users/token?userId=USER4', 'POST');
   const gen = await r.json();
   const token1 = gen.data?.token || '';
   check('generar token', r.status === 200 && /^crt_[A-Za-z0-9_-]{40,}$/.test(token1), r.status);
@@ -756,115 +801,115 @@ async function runTests() {
 
   r = await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } });
   const listRaw = await r.text();
-  const u3 = JSON.parse(listRaw).data.users.find((u) => u.userId === 'USER3');
+  const u3 = JSON.parse(listRaw).data.users.find((u) => u.userId === 'USER4');
   check('  lista: hasToken + hint, sin el token', u3?.hasToken === true && u3?.tokenHint === token1.slice(-4) && !listRaw.includes(token1) && !listRaw.includes('webhookTokenEnc'));
 
   // Con token: la firma global ya no sirve para este cliente
   body = J({ images: [{ url: 'https://x.test/legacy2.jpg' }] });
-  r = await fetch(BASE + '/api/webhook/USER3', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body), 'x-forwarded-for': ip() }, body });
+  r = await fetch(BASE + '/api/webhook/USER4', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body), 'x-forwarded-for': ip() }, body });
   check('con token: firma global rechazada -> 401', r.status === 401, r.status);
 
-  let cp = await clientPost('/api/webhook/USER3', token1, { images: [{ url: 'https://x.test/t1.jpg' }] }, { ts: null, sig: 'ab'.repeat(32) });
+  let cp = await clientPost('/api/webhook/USER4', token1, { images: [{ url: 'https://x.test/t1.jpg' }] }, { ts: null, sig: 'ab'.repeat(32) });
   check('sin timestamp -> 401', cp.status === 401, cp.status);
-  cp = await clientPost('/api/webhook/USER3', token1, { images: [{ url: 'https://x.test/t1.jpg' }] }, { ts: now() - 3600 });
+  cp = await clientPost('/api/webhook/USER4', token1, { images: [{ url: 'https://x.test/t1.jpg' }] }, { ts: now() - 3600 });
   check('timestamp viejo -> 401', cp.status === 401, cp.status + ' ' + cp.json.error);
-  cp = await clientPost('/api/webhook/USER3', 'crt_token-equivocado', { images: [{ url: 'https://x.test/t1.jpg' }] });
+  cp = await clientPost('/api/webhook/USER4', 'crt_token-equivocado', { images: [{ url: 'https://x.test/t1.jpg' }] });
   check('token equivocado -> 401', cp.status === 401, cp.status);
-  cp = await clientPost('/api/webhook/USER3', token1, { images: [{ url: 'https://x.test/t1.jpg' }] });
+  cp = await clientPost('/api/webhook/USER4', token1, { images: [{ url: 'https://x.test/t1.jpg' }] });
   check('firma con token correcta', cp.status === 200 && cp.json.data?.count === 1, cp.status + ' ' + (cp.json.error || ''));
   // Repetir exactamente la misma petición (misma firma y timestamp)
-  r = await fetch(BASE + '/api/webhook/USER3', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-timestamp': String(cp.ts), 'x-webhook-secret': cp.sig, 'x-forwarded-for': ip() }, body: cp.body });
+  r = await fetch(BASE + '/api/webhook/USER4', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-timestamp': String(cp.ts), 'x-webhook-secret': cp.sig, 'x-forwarded-for': ip() }, body: cp.body });
   check('petición repetida -> 401', r.status === 401, r.status);
   cp = await clientPost('/api/webhook/USER1', token1, { images: [{ url: 'https://x.test/cross.jpg' }] });
-  check('token de USER3 contra USER1 -> 401', cp.status === 401, cp.status);
-  cp = await clientPost('/api/manage/USER3', token1, { action: 'list' });
+  check('token de USER4 contra USER1 -> 401', cp.status === 401, cp.status);
+  cp = await clientPost('/api/manage/USER4', token1, { action: 'list' });
   check('manage con token', cp.status === 200 && cp.json.data?.count === 2, cp.status + ' count=' + cp.json.data?.count);
-  cp = await clientPost('/api/settings-read/USER3', token1, '{}');
+  cp = await clientPost('/api/settings-read/USER4', token1, '{}');
   check('settings-read con token', cp.status === 200, cp.status);
   check('  settings-read: Full HD horizontal por defecto', cp.json.data?.posterResolution === 'fullhd' && cp.json.data?.posterWidth === 1920 && cp.json.data?.posterHeight === 1080, J(cp.json.data));
-  r = await adminJson('/api/settings?userId=USER3', 'PATCH', { posterResolution: '4k', defaultOrientation: 'vertical' });
-  cp = await clientPost('/api/settings-read/USER3', token1, '{"n":"tamano"}'); // cuerpo distinto: la misma firma en el mismo segundo es una repetición
+  r = await adminJson('/api/settings?userId=USER4', 'PATCH', { posterResolution: '4k', defaultOrientation: 'vertical' });
+  cp = await clientPost('/api/settings-read/USER4', token1, '{"n":"tamano"}'); // cuerpo distinto: la misma firma en el mismo segundo es una repetición
   check('  settings-read entrega el tamaño elegido', cp.json.data?.posterResolution === '4k' && cp.json.data?.posterWidth === 2160 && cp.json.data?.posterHeight === 3840, J(cp.json.data));
-  await adminJson('/api/settings?userId=USER3', 'PATCH', { posterResolution: 'fullhd', defaultOrientation: 'horizontal' });
+  await adminJson('/api/settings?userId=USER4', 'PATCH', { posterResolution: 'fullhd', defaultOrientation: 'horizontal' });
 
-  r = await adminJson('/api/users/token?userId=USER3', 'POST');
+  r = await adminJson('/api/users/token?userId=USER4', 'POST');
   const token2 = (await r.json()).data?.token || '';
   check('regenerar token', r.status === 200 && token2 && token2 !== token1, r.status);
-  cp = await clientPost('/api/manage/USER3', token1, { action: 'list' });
+  cp = await clientPost('/api/manage/USER4', token1, { action: 'list' });
   check('  token anterior -> 401', cp.status === 401, cp.status);
-  cp = await clientPost('/api/manage/USER3', token2, { action: 'list' });
+  cp = await clientPost('/api/manage/USER4', token2, { action: 'list' });
   check('  token nuevo OK', cp.status === 200, cp.status);
 
   console.log('\n== Espacio por usuario ==');
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   let us = await r.json();
-  check('GET /api/usage?userId=USER3', r.status === 200 && us.data?.storage?.usedBytes === 0, r.status + ' used=' + us.data?.storage?.usedBytes);
+  check('GET /api/usage?userId=USER4', r.status === 200 && us.data?.storage?.usedBytes === 0, r.status + ' used=' + us.data?.storage?.usedBytes);
   check('  límite por defecto 500 MB', us.data?.storage?.limitBytes === 500 * 1024 * 1024, us.data?.storage?.limitBytes);
 
-  r = await adminJson('/api/users?userId=USER3', 'PATCH', { storageLimitMb: 0 });
+  r = await adminJson('/api/users?userId=USER4', 'PATCH', { storageLimitMb: 0 });
   check('límite 0 -> 400', r.status === 400, r.status);
-  r = await adminJson('/api/users?userId=USER3', 'PATCH', { storageLimitMb: 1 });
+  r = await adminJson('/api/users?userId=USER4', 'PATCH', { storageLimitMb: 1 });
   check('límite 1 MB', r.status === 200 && (await r.json()).data?.storageLimitMb === 1, r.status);
 
   // GIF de 600 KB (los GIF se guardan tal cual, sin recomprimir)
   const BIG = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(600 * 1024)]);
-  r = await fetch(BASE + '/api/images-upload?userId=USER3', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
+  r = await fetch(BASE + '/api/images-upload?userId=USER4', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
   const big1 = await r.json();
-  check('subir 600 KB (cabe en 1 MB)', r.status === 200 && /^\/uploads\/USER3-/.test(big1.data?.url || ''), r.status + ' ' + (big1.data?.url || big1.error));
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  check('subir 600 KB (cabe en 1 MB)', r.status === 200 && /^\/uploads\/USER4-/.test(big1.data?.url || ''), r.status + ' ' + (big1.data?.url || big1.error));
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   us = await r.json();
   check('  usado = 600 KB, 1 archivo', us.data?.storage?.usedBytes === BIG.length && us.data?.storage?.fileCount === 1, us.data?.storage?.usedBytes);
 
-  r = await fetch(BASE + '/api/images-upload?userId=USER3', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
+  r = await fetch(BASE + '/api/images-upload?userId=USER4', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
   let full = await r.json();
   check('segunda subida excede -> 413 QUOTA_EXCEEDED', r.status === 413 && full.details?.code === 'QUOTA_EXCEEDED', r.status + ' ' + full.details?.code);
-  cp = await clientPost('/api/upload/USER3', token2, { data: BIG.toString('base64'), contentType: 'image/gif' });
+  cp = await clientPost('/api/upload/USER4', token2, { data: BIG.toString('base64'), contentType: 'image/gif' });
   check('subida de n8n también -> 413', cp.status === 413 && cp.json.details?.code === 'QUOTA_EXCEEDED', cp.status);
 
   r = await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } });
-  const u3b = (await r.json()).data.users.find((u) => u.userId === 'USER3');
+  const u3b = (await r.json()).data.users.find((u) => u.userId === 'USER4');
   check('  lista de usuarios trae uso y límite', u3b?.usedBytes === BIG.length && u3b?.limitBytes === 1024 * 1024 && u3b?.storageLimitMb === 1, u3b?.usedBytes + '/' + u3b?.limitBytes);
 
-  // Un archivo de USER3 añadido por URL a otro carrusel no se borra al quitarlo de allí
+  // Un archivo de USER4 añadido por URL a otro carrusel no se borra al quitarlo de allí
   r = await adminJson('/api/images?userId=USER1', 'POST', { url: big1.data.url, alt: 'ajena' });
   const foreign = await r.json();
   r = await fetch(BASE + `/api/images?userId=USER1&id=${foreign.data?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
   const still = await fetch(BASE + big1.data.url);
   check('archivo ajeno no se borra desde otro carrusel', r.status === 200 && still.status === 200, r.status + '/' + still.status);
 
-  r = await fetch(BASE + `/api/images?userId=USER3&id=${big1.data.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+  r = await fetch(BASE + `/api/images?userId=USER4&id=${big1.data.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
   const gone = await fetch(BASE + big1.data.url);
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   us = await r.json();
   check('borrar la imagen libera el espacio', gone.status === 404 && us.data?.storage?.usedBytes === 0, gone.status + ' used=' + us.data?.storage?.usedBytes);
-  r = await fetch(BASE + '/api/images-upload?userId=USER3', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
+  r = await fetch(BASE + '/api/images-upload?userId=USER4', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: BIG });
   check('  y se puede volver a subir', r.status === 200, r.status);
-  r = await adminJson('/api/users?userId=USER3', 'PATCH', { storageLimitMb: null });
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  r = await adminJson('/api/users?userId=USER4', 'PATCH', { storageLimitMb: null });
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   check('límite null vuelve al default', (await r.json()).data?.storage?.limitBytes === 500 * 1024 * 1024);
 
   // Tope de tamaño de la subida del panel: se corta mientras llega y no deja nada guardado
-  r = await fetch(BASE + '/api/images-upload?userId=USER3', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(750 * 1024)]) });
+  r = await fetch(BASE + '/api/images-upload?userId=USER4', { method: 'POST', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(750 * 1024)]) });
   full = await r.json();
   check('imagen del panel sobre el tope -> 413 (no es cuota)', r.status === 413 && full.details?.code !== 'QUOTA_EXCEEDED', r.status + ' ' + (full.error || ''));
 
   console.log('\n== Subida binaria de n8n (cuerpo crudo, firma sobre los bytes) ==');
   const signBytes = (token, buf, ts) => createHmac('sha256', token).update(`${ts}.`).update(buf).digest('hex');
-  const rawUpload = async (buf, { token = token2, ts = now(), sig, type = 'image/png', path = '/api/upload/USER3?alt=Desde%20n8n' } = {}) => {
+  const rawUpload = async (buf, { token = token2, ts = now(), sig, type = 'image/png', path = '/api/upload/USER4?alt=Desde%20n8n' } = {}) => {
     const headers = { 'content-type': type, 'x-forwarded-for': ip(), 'x-webhook-timestamp': String(ts) };
     headers['x-webhook-secret'] = sig || signBytes(token, buf, ts);
     const res = await fetch(BASE + path, { method: 'POST', headers, body: buf });
     return { status: res.status, json: await res.json().catch(() => ({})), sig: headers['x-webhook-secret'], ts };
   };
   let rb = await rawUpload(PNG);
-  check('binario firmado -> 200', rb.status === 200 && /^\/uploads\/USER3-/.test(rb.json.data?.url || ''), rb.status + ' ' + (rb.json.error || ''));
-  check('  alt por query y userId', rb.json.data?.alt === 'Desde n8n' && rb.json.data?.userId === 'USER3', J([rb.json.data?.alt, rb.json.data?.userId]));
+  check('binario firmado -> 200', rb.status === 200 && /^\/uploads\/USER4-/.test(rb.json.data?.url || ''), rb.status + ' ' + (rb.json.error || ''));
+  check('  alt por query y userId', rb.json.data?.alt === 'Desde n8n' && rb.json.data?.userId === 'USER4', J([rb.json.data?.alt, rb.json.data?.userId]));
   r = await fetch(BASE + (rb.json.data?.url || '/nada'));
   check('  el archivo se sirve', r.status === 200 && (r.headers.get('content-type') || '').includes('image'), r.status);
   // Se añade al carrusel y se borra: el archivo deja de contar en su espacio
-  r = await adminJson('/api/images?userId=USER3', 'POST', { url: rb.json.data?.url, alt: 'binaria' });
+  r = await adminJson('/api/images?userId=USER4', 'POST', { url: rb.json.data?.url, alt: 'binaria' });
   const rawItem = (await r.json()).data;
-  r = await fetch(BASE + `/api/images?userId=USER3&id=${rawItem?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+  r = await fetch(BASE + `/api/images?userId=USER4&id=${rawItem?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
   check('  se puede añadir al carrusel y borrar', r.status === 200 && (await fetch(BASE + rb.json.data.url)).status === 404, r.status);
   // Pósters grandes (2K / 4K): se guardan a su tamaño y, pasando de 3840 px, se reducen a 3840
   {
@@ -881,9 +926,9 @@ async function runTests() {
       const up = await rawUpload(await gradientJpeg(w, h), { type: 'image/jpeg' });
       const file = await fetch(BASE + (up.json.data?.url || '/nada'));
       const meta = file.status === 200 ? await sharp(Buffer.from(await file.arrayBuffer())).metadata() : {};
-      // Se añade al carrusel y se borra: el archivo deja de contar en el espacio de USER3
-      const added = await (await adminJson('/api/images?userId=USER3', 'POST', { url: up.json.data?.url, alt: 'grande' })).json();
-      await fetch(BASE + `/api/images?userId=USER3&id=${added.data?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+      // Se añade al carrusel y se borra: el archivo deja de contar en el espacio de USER4
+      const added = await (await adminJson('/api/images?userId=USER4', 'POST', { url: up.json.data?.url, alt: 'grande' })).json();
+      await fetch(BASE + `/api/images?userId=USER4&id=${added.data?.id}`, { method: 'DELETE', headers: { cookie: adminCookie } });
       return { status: up.status, error: up.json.error, width: meta.width, height: meta.height, format: meta.format };
     };
     let big = await stored(2560, 1440);
@@ -914,7 +959,7 @@ async function runTests() {
   r = await fetch(BASE + '/api/upload/USER1', { method: 'POST', headers: { 'content-type': 'image/png', 'x-forwarded-for': ip(), 'x-webhook-secret': createHmac('sha256', WEBHOOK_SECRET).update(PNG).digest('hex') }, body: PNG });
   check('binario con firma global (cliente sin token) -> 200', r.status === 200, r.status);
   // El modo base64 tiene un tope más bajo: lo grande va en binario
-  cp = await clientPost('/api/upload/USER3', token2, { data: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(800 * 1024)]).toString('base64'), contentType: 'image/gif' });
+  cp = await clientPost('/api/upload/USER4', token2, { data: Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(800 * 1024)]).toString('base64'), contentType: 'image/gif' });
   check('base64 grande -> 413 y apunta al modo binario', cp.status === 413 && /binario/i.test(cp.json.error || ''), cp.status + ' ' + (cp.json.error || ''));
 
   // Bytes alterados después de firmar: la firma ya no cuadra
@@ -931,15 +976,15 @@ async function runTests() {
     },
   });
   const overPanel = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(750 * 1024)]);
-  r = await fetch(BASE + '/api/images-upload?userId=USER3', { method: 'POST', duplex: 'half', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: chunked(overPanel) });
+  r = await fetch(BASE + '/api/images-upload?userId=USER4', { method: 'POST', duplex: 'half', headers: { cookie: adminCookie, 'x-forwarded-for': ip(), 'content-type': 'image/gif' }, body: chunked(overPanel) });
   check('panel, por trozos y sobre el tope -> 413', r.status === 413, r.status);
   const overRaw = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(950 * 1024)]);
   const tsRaw = now() + 5;
-  r = await fetch(BASE + '/api/upload/USER3', { method: 'POST', duplex: 'half', headers: { 'content-type': 'image/gif', 'x-forwarded-for': ip(), 'x-webhook-timestamp': String(tsRaw), 'x-webhook-secret': signBytes(token2, overRaw, tsRaw) }, body: chunked(overRaw) });
+  r = await fetch(BASE + '/api/upload/USER4', { method: 'POST', duplex: 'half', headers: { 'content-type': 'image/gif', 'x-forwarded-for': ip(), 'x-webhook-timestamp': String(tsRaw), 'x-webhook-secret': signBytes(token2, overRaw, tsRaw) }, body: chunked(overRaw) });
   check('binario n8n, por trozos y sobre el tope -> 413', r.status === 413, r.status);
 
   // Un JSON de upload mucho mayor que el tope de base64 se rechaza sin llegar a leerlo entero
-  r = await fetch(BASE + '/api/upload/USER3', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip(), 'x-webhook-secret': '00'.repeat(32) }, body: J({ data: 'A'.repeat(2 * 1024 * 1024), contentType: 'image/png' }) });
+  r = await fetch(BASE + '/api/upload/USER4', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip(), 'x-webhook-secret': '00'.repeat(32) }, body: J({ data: 'A'.repeat(2 * 1024 * 1024), contentType: 'image/png' }) });
   check('JSON de upload enorme -> 413 antes de procesarlo', r.status === 413, r.status);
 
   console.log('\n== Streaming: cuerpo cortado (unidad de api/_stream.js) ==');
@@ -982,21 +1027,21 @@ async function runTests() {
   }
 
   console.log('\n== Consumo (lo reporta n8n) ==');
-  cp = await clientPost('/api/usage/USER3', token2, { eventId: 'evt-1', kind: 'image', model: 'qwen-image' });
+  cp = await clientPost('/api/usage/USER4', token2, { eventId: 'evt-1', kind: 'image', model: 'qwen-image' });
   check('reportar imagen sin tokens', cp.status === 200 && cp.json.data?.usage?.images === 1 && cp.json.data?.usage?.imagesNoTokens === 1, cp.status + ' ' + (cp.json.error || ''));
   check('  costo aproximado 0.06', cp.json.data?.usage?.estimatedCostUsd === 0.06, cp.json.data?.usage?.estimatedCostUsd);
   // Reintento de n8n: mismo evento, firma nueva (otro timestamp)
-  cp = await clientPost('/api/usage/USER3', token2, { eventId: 'evt-1', kind: 'image', model: 'qwen-image' }, { ts: now() + 2 });
+  cp = await clientPost('/api/usage/USER4', token2, { eventId: 'evt-1', kind: 'image', model: 'qwen-image' }, { ts: now() + 2 });
   check('mismo eventId no se cuenta dos veces', cp.status === 200 && cp.json.data?.duplicate === true && cp.json.data?.usage?.images === 1, cp.status + ' images=' + cp.json.data?.usage?.images);
-  cp = await clientPost('/api/usage/USER3', token2, { eventId: 'evt-2', kind: 'image', tokens: { input_tokens: 200, output_tokens: 1000, total_tokens: 1200 } });
+  cp = await clientPost('/api/usage/USER4', token2, { eventId: 'evt-2', kind: 'image', tokens: { input_tokens: 200, output_tokens: 1000, total_tokens: 1200 } });
   check('imagen con tokens del proveedor', cp.json.data?.usage?.images === 2 && cp.json.data?.usage?.imagesNoTokens === 1 && cp.json.data?.usage?.tokensTotal === 1200 && cp.json.data?.usage?.tokensIn === 200, J(cp.json.data?.usage));
-  cp = await clientPost('/api/usage/USER3', token2, { eventId: 'evt-3', kind: 'video', seconds: 5 });
+  cp = await clientPost('/api/usage/USER4', token2, { eventId: 'evt-3', kind: 'video', seconds: 5 });
   check('video de 5 s', cp.json.data?.usage?.videos === 1 && cp.json.data?.usage?.videoSeconds === 5, J(cp.json.data?.usage));
-  cp = await clientPost('/api/usage/USER3', token2, { eventId: 'evt-4', kind: 'text', tokens: { prompt_tokens: 50, completion_tokens: 30 } });
+  cp = await clientPost('/api/usage/USER4', token2, { eventId: 'evt-4', kind: 'text', tokens: { prompt_tokens: 50, completion_tokens: 30 } });
   check('texto: solo tokens', cp.json.data?.usage?.tokensTotal === 1280 && cp.json.data?.usage?.images === 2, cp.json.data?.usage?.tokensTotal);
-  cp = await clientPost('/api/usage/USER3', token2, { kind: 'audio' });
+  cp = await clientPost('/api/usage/USER4', token2, { kind: 'audio' });
   check('kind inválido -> 400', cp.status === 400, cp.status);
-  cp = await clientPost('/api/usage/USER3', 'crt_otro', { kind: 'image' });
+  cp = await clientPost('/api/usage/USER4', 'crt_otro', { kind: 'image' });
   check('consumo con token equivocado -> 401', cp.status === 401, cp.status);
 
   // El mismo código que corre en los nodos Code de n8n (n8n/firma.js y n8n/consumo.js).
@@ -1021,31 +1066,31 @@ async function runTests() {
   check('n8n: la misma generación no se suma dos veces', nr.status === 200 && nr.duplicate === true && nr.u.images === 1, nr.status + ' images=' + nr.u.images);
   nr = await n8nReport('USER1', WEBHOOK_SECRET, {}, 1);
   check('n8n: Qwen sin tokens entra al costo aproximado', nr.status === 200 && nr.u.images === 2 && nr.u.imagesNoTokens === 1 && nr.u.estimatedCostUsd === 0.06, nr.status + ' ' + J(nr.u));
-  // USER3 tiene token propio (crt_): firma con timestamp.
-  nr = await n8nReport('USER3', token2, wanGen, 2);
+  // USER4 tiene token propio (crt_): firma con timestamp.
+  nr = await n8nReport('USER4', token2, wanGen, 2);
   check('n8n: Wan con token crt_', nr.status === 200 && nr.u.images === 3 && nr.u.tokensTotal === 2480, nr.status + ' ' + J(nr.u));
-  nr = await n8nReport('USER3', token2, wanGen, 3, (b) => createHmac('sha256', token2).update(b, 'utf8').digest('hex'));
+  nr = await n8nReport('USER4', token2, wanGen, 3, (b) => createHmac('sha256', token2).update(b, 'utf8').digest('hex'));
   check('n8n: token crt_ firmado sin timestamp -> 401', nr.status === 401, nr.status);
   // Texto (DeepSeek) y audio (Gemini) con la forma exacta de OpenRouter: suman tokens y no cuentan como imagen.
   const chatGen = { model: 'deepseek/deepseek-v4.1-flash', choices: [{ message: { content: '{}' } }], usage: { prompt_tokens: 1319, completion_tokens: 3800, total_tokens: 5119, cost: 0.001, prompt_tokens_details: { cached_tokens: 0, audio_tokens: 0 } } };
   const audioGen = { model: 'google/gemini-3.5-flash-lite', choices: [{ message: { content: 'hola' } }], usage: { prompt_tokens: 249, completion_tokens: 14, total_tokens: 263, cost: 0.0001, prompt_tokens_details: { audio_tokens: 213 } } };
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   const u0 = (await r.json()).data?.usage || {};
-  nr = await n8nReport('USER3', token2, chatGen, 4);
+  nr = await n8nReport('USER4', token2, chatGen, 4);
   check('n8n: el texto de DeepSeek suma sus tokens y no cuenta como imagen', nr.status === 200 && nr.u.tokensTotal === u0.tokensTotal + 5119 && nr.u.tokensIn === u0.tokensIn + 1319 && nr.u.tokensOut === u0.tokensOut + 3800 && nr.u.images === u0.images, nr.status + ' ' + J(nr.u));
-  nr = await n8nReport('USER3', token2, audioGen, 5);
+  nr = await n8nReport('USER4', token2, audioGen, 5);
   check('n8n: el audio transcrito suma sus tokens', nr.status === 200 && nr.u.tokensTotal === u0.tokensTotal + 5119 + 263 && nr.u.images === u0.images, nr.status + ' ' + J(nr.u));
 
   r = await adminJson('/api/usage', 'PATCH', { imagePriceUsd: 0.1 });
   check('super-admin cambia el precio por imagen', r.status === 200 && (await r.json()).data?.imagePriceUsd === 0.1, r.status);
   r = await adminJson('/api/usage', 'PATCH', { imagePriceUsd: -1 });
   check('precio negativo -> 400', r.status === 400, r.status);
-  r = await adminJson('/api/usage?userId=USER3', 'GET');
+  r = await adminJson('/api/usage?userId=USER4', 'GET');
   us = await r.json();
   check('  el costo usa el precio nuevo', us.data?.usage?.estimatedCostUsd === 0.1 && us.data?.usage?.imagePriceUsd === 0.1, us.data?.usage?.estimatedCostUsd);
-  r = await adminJson('/api/usage?userId=USER3&month=2020-01', 'GET');
+  r = await adminJson('/api/usage?userId=USER4&month=2020-01', 'GET');
   check('  otro mes está en cero', (await r.json()).data?.usage?.images === 0);
-  r = await adminJson('/api/usage?userId=USER3&month=octubre', 'GET');
+  r = await adminJson('/api/usage?userId=USER4&month=octubre', 'GET');
   check('mes inválido -> 400', r.status === 400, r.status);
 
   // El cliente ve lo suyo y no puede tocar la configuración
@@ -1053,7 +1098,7 @@ async function runTests() {
   const c3 = (r.headers.get('set-cookie') || '').split(';')[0];
   r = await fetch(BASE + '/api/usage', { headers: { cookie: c3 } });
   us = await r.json();
-  check('el cliente ve su espacio y consumo', r.status === 200 && us.data?.userId === 'USER3' && us.data?.usage?.images === 3 && us.data?.storage?.fileCount === 1, r.status + ' images=' + us.data?.usage?.images);
+  check('el cliente ve su espacio y consumo', r.status === 200 && us.data?.userId === 'USER4' && us.data?.usage?.images === 3 && us.data?.storage?.fileCount === 1, r.status + ' images=' + us.data?.usage?.images);
   r = await fetch(BASE + '/api/usage?userId=USER1', { headers: { cookie: c3 } });
   check('  ?userId ajeno -> 403', r.status === 403, r.status);
   r = await fetch(BASE + '/api/usage', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: c3 }, body: J({ imagePriceUsd: 0 }) });
@@ -1159,7 +1204,7 @@ async function runTests() {
 
   console.log('\n== Sesiones ==');
   const whoami = async (cookie, extra = {}) => (await (await fetch(BASE + '/api/auth', { headers: { cookie, ...extra } })).json()).authenticated;
-  check('sesión de USER3 vigente', (await whoami(c3)) === true);
+  check('sesión de USER4 vigente', (await whoami(c3)) === true);
   r = await fetch(BASE + '/api/auth', { method: 'DELETE', headers: { cookie: c3 } });
   check('logout', r.status === 200, r.status);
   check('  la cookie copiada ya no sirve', (await whoami(c3)) === false);
@@ -1207,6 +1252,265 @@ async function runTests() {
   r = await tryLogin('cliente-token-1', '10.77.0.2');
   check('  desde otra IP sí entra', r.status === 200, r.status);
 
+  console.log('\n== Registro propio y recuperación ==');
+  {
+    let ipN = 0;
+    const ip = () => `10.88.${Math.floor(++ipN / 250)}.${ipN % 250}`;
+    const account = (action, payload, from = ip()) => fetch(BASE + '/api/account/' + action, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': from },
+      body: J(payload),
+    });
+    const mailDir = join(dataDir, 'mail');
+    const mailsTo = async (to) => {
+      const files = await readdir(mailDir).catch(() => []);
+      const out = [];
+      for (const f of files.sort()) {
+        const m = JSON.parse(await readFile(join(mailDir, f), 'utf8'));
+        if (m.to === to) out.push(m);
+      }
+      return out;
+    };
+    // forgot manda el correo sin esperar: se busca unos instantes.
+    const waitMail = async (to, count) => {
+      for (let i = 0; i < 40; i++) {
+        const list = await mailsTo(to);
+        if (list.length >= count) return list[count - 1];
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      return null;
+    };
+    const linkToken = (mail, kind) => mail && (new RegExp(`#${kind}=([A-Za-z0-9_-]+)`).exec(mail.text) || [])[1];
+
+    r = await fetch(BASE + '/api/auth');
+    let a = await r.json();
+    check('GET /api/auth sin sesión anuncia registro', a.account?.signupEnabled === true && a.account?.recoveryEnabled === true, J(a.account));
+    check('  sin Turnstile en local no hay site key', a.account?.turnstileSiteKey === null);
+
+    r = await account('register', { name: 'Ana', email: 'no-es-correo', password: 'clave-larga-123' });
+    check('registro con correo inválido -> 400', r.status === 400, r.status);
+    r = await account('register', { name: 'Ana', email: 'ana@example.com', password: 'corta' });
+    check('registro con clave corta -> 400', r.status === 400, r.status);
+    r = await account('register', { name: '', email: 'ana@example.com', password: 'clave-larga-123' });
+    check('registro sin nombre -> 400', r.status === 400, r.status);
+
+    r = await account('register', { name: 'Ana Pruebas', email: 'Ana@Example.com', password: 'clave-larga-123' });
+    const regMsg = (await r.json()).message;
+    check('registro nuevo -> 200', r.status === 200, r.status);
+    let mail = await waitMail('ana@example.com', 1);
+    const verifyToken = linkToken(mail, 'verificar');
+    check('  llega correo con enlace #verificar', Boolean(verifyToken), mail?.subject);
+    check('  el enlace usa la URL del sitio', /http:\/\/localhost:3123\/admin\.html#verificar=/.test(mail?.text || ''));
+    r = await fetch(BASE + '/api/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: J({ email: 'ana@example.com', password: 'clave-larga-123' }) });
+    check('  sin verificar no puede entrar (401)', r.status === 401, r.status);
+
+    r = await account('verify', { token: verifyToken });
+    const anaCookie = (r.headers.get('set-cookie') || '').split(';')[0];
+    a = await r.json();
+    check('verify crea la cuenta y abre sesión', r.status === 200 && a.data?.role === 'user' && /^USER\d+$/.test(a.data?.userId || ''), r.status);
+    const anaId = a.data?.userId;
+    r = await fetch(BASE + '/api/auth', { headers: { cookie: anaCookie } });
+    a = await r.json();
+    check('  la sesión vale', a.authenticated === true && a.userId === anaId && a.name === 'Ana Pruebas', J(a));
+    r = await account('verify', { token: verifyToken });
+    check('  el mismo enlace no sirve dos veces (400)', r.status === 400, r.status);
+    r = await account('verify', { token: 'x'.repeat(43) });
+    check('  enlace inventado -> 400', r.status === 400, r.status);
+    r = await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } });
+    const anaRow = (await r.json()).data.users.find((u) => u.userId === anaId);
+    check('  el super-admin la ve como registro propio', anaRow?.createdBy === 'self', J(anaRow?.createdBy));
+
+    r = await account('register', { name: 'Ana', email: 'ana@example.com', password: 'otra-clave-123' });
+    check('re-registro con el mismo correo responde igual', r.status === 200 && (await r.json()).message === regMsg, r.status);
+    check('  y por el enfriamiento no manda otro correo', (await mailsTo('ana@example.com')).length === 1);
+
+    r = await account('register', { name: 'Intruso', email: 'user1@local.test', password: 'clave-larga-123' });
+    check('registro con correo de otra cuenta responde igual', r.status === 200 && (await r.json()).message === regMsg, r.status);
+    mail = await waitMail('user1@local.test', 1);
+    const staleReset = linkToken(mail, 'restablecer');
+    check('  al dueño le llega "ya tienes cuenta" con enlace de recuperación', /Ya tienes una cuenta/.test(mail?.subject || '') && Boolean(staleReset), mail?.subject);
+
+    r = await account('forgot', { email: 'nadie@example.com' });
+    check('forgot de correo inexistente responde igual', r.status === 200 && (await r.json()).message === regMsg, r.status);
+    await new Promise((res) => setTimeout(res, 300));
+    check('  y no manda nada', (await mailsTo('nadie@example.com')).length === 0);
+
+    r = await account('forgot', { email: 'ana@example.com' });
+    check('forgot de Ana -> 200', r.status === 200, r.status);
+    mail = await waitMail('ana@example.com', 2);
+    const resetToken = linkToken(mail, 'restablecer');
+    check('  llega enlace #restablecer', Boolean(resetToken), mail?.subject);
+    r = await account('reset', { token: resetToken, password: 'corta' });
+    check('reset con clave corta -> 400 (y el enlace sigue sirviendo)', r.status === 400, r.status);
+    r = await account('reset', { token: resetToken, password: 'clave-nueva-456' });
+    check('reset -> 200', r.status === 200, r.status);
+    r = await account('reset', { token: resetToken, password: 'clave-nueva-789' });
+    check('  el enlace no sirve dos veces (400)', r.status === 400, r.status);
+    r = await fetch(BASE + '/api/images', { headers: { cookie: anaCookie } });
+    check('  la sesión anterior se cerró (401)', r.status === 401, r.status);
+    const login = (email, password) => fetch(BASE + '/api/auth', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip() }, body: J({ email, password }) });
+    r = await login('ana@example.com', 'clave-larga-123');
+    check('  la clave vieja ya no entra', r.status === 401, r.status);
+    r = await login('ana@example.com', 'clave-nueva-456');
+    check('  la clave nueva sí', r.status === 200, r.status);
+
+    // Un enlace viejo deja de valer cuando la clave cambia por otro enlace.
+    r = await account('forgot', { email: 'user1@local.test' });
+    mail = await waitMail('user1@local.test', 2);
+    r = await account('reset', { token: linkToken(mail, 'restablecer'), password: 'user1-clave-nueva' });
+    check('reset de USER1 con el enlace nuevo -> 200', r.status === 200, r.status);
+    r = await account('reset', { token: staleReset, password: 'user1-otra-clave' });
+    check('  el enlace anterior ya no vale (400)', r.status === 400, r.status);
+
+    r = await fetch(BASE + '/api/account/register', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.test' }, body: J({ name: 'x', email: 'x@example.com', password: 'clave-larga-123' }) });
+    check('registro con Origin ajeno -> 403', r.status === 403, r.status);
+    r = await account('nada', {});
+    check('acción desconocida -> 404', r.status === 404, r.status);
+
+    // Tope por hora por IP (ACCOUNT_HOURLY_LIMIT, 10 por defecto)
+    const sameIp = '10.89.0.1';
+    let last;
+    for (let i = 0; i < 11; i++) last = await account('forgot', { email: `tope${i}@example.com` }, sameIp);
+    check('11 envíos en una hora desde la misma IP -> 429', last.status === 429, last.status);
+
+    // Altas simultáneas: cada una recibe su propio USERn
+    const emails = [1, 2, 3, 4, 5].map((n) => `paralelo${n}@example.com`);
+    await Promise.all(emails.map((email) => account('register', { name: email, email, password: 'clave-larga-123' })));
+    const tokens = await Promise.all(emails.map(async (email) => linkToken(await waitMail(email, 1), 'verificar')));
+    const ids = await Promise.all(tokens.map(async (token) => (await (await account('verify', { token })).json()).data?.userId));
+    check('5 altas simultáneas -> 5 USERn distintos', new Set(ids.filter(Boolean)).size === 5, J(ids));
+
+    // Un USERn borrado no se reutiliza
+    const maxId = Math.max(...ids.map((id) => parseInt(String(id).slice(4), 10)));
+    r = await fetch(BASE + `/api/users?userId=USER${maxId}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+    check('borrar el USERn más alto', r.status === 200, r.status);
+    await account('register', { name: 'Tardío', email: 'tardio@example.com', password: 'clave-larga-123' });
+    r = await account('verify', { token: linkToken(await waitMail('tardio@example.com', 1), 'verificar') });
+    const lateId = (await r.json()).data?.userId;
+    check('  el siguiente registro no reutiliza su número', lateId === `USER${maxId + 1}`, lateId);
+  }
+
+  console.log('\n== WhatsApp vinculado desde el panel ==');
+  {
+    let ipW = 0;
+    const ipw = () => `10.90.0.${++ipW}`;
+    const mkUser = async (email) => {
+      await adminJson('/api/users', 'POST', { name: email, email, password: 'clave-larga-123' });
+      const res = await fetch(BASE + '/api/auth', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ipw() }, body: J({ email, password: 'clave-larga-123' }) });
+      const body = await res.json();
+      return { cookie: (res.headers.get('set-cookie') || '').split(';')[0], userId: body.data?.userId };
+    };
+    const wa = (cookie, method, payload, query = '') => fetch(BASE + '/api/whatsapp' + query, {
+      method,
+      headers: { 'content-type': 'application/json', cookie },
+      body: payload === undefined ? undefined : J(payload),
+    });
+    const a = await mkUser('wa-a@example.com');
+    const b = await mkUser('wa-b@example.com');
+
+    r = await wa(a.cookie, 'GET');
+    let w = (await r.json()).data;
+    check('GET whatsapp sin número', r.status === 200 && w.phone === null && w.available === true, J(w));
+    r = await wa(a.cookie, 'POST', { phone: '123' });
+    check('número corto -> 400', r.status === 400, r.status);
+
+    n8nCalls.length = 0;
+    r = await wa(a.cookie, 'POST', { phone: '+52 1 81 1234 5678' });
+    w = (await r.json()).data;
+    check('vincular +52 1 81 1234 5678 -> guarda los últimos 10 dígitos', r.status === 200 && w.phone === '8112345678', J(w));
+    const up = n8nCalls[0];
+    check('  n8n recibe upsert con la clave del header', up?.key === N8N_KEY && up?.body.action === 'upsert' && up?.body.numero === '8112345678' && up?.body.carrusel === a.userId, J(up?.body && { ...up.body, token: '…' }));
+    check('  y el token del cliente (crt_)', /^crt_/.test(up?.body.token || ''));
+    check('  la respuesta al navegador no trae el token', !J(w).includes('crt_'));
+
+    // El token que recibió n8n firma de verdad las peticiones de ese carrusel.
+    const tsA = Math.floor(Date.now() / 1000);
+    const bodyA = '{}';
+    r = await fetch(BASE + `/api/settings-read/${a.userId}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-timestamp': String(tsA), 'x-webhook-secret': createHmac('sha256', up.body.token).update(`${tsA}.${bodyA}`).digest('hex') }, body: bodyA });
+    check('  ese token firma settings-read del carrusel', r.status === 200, r.status);
+
+    r = await wa(b.cookie, 'POST', { phone: '8112345678' });
+    check('el mismo número en otra cuenta -> 409', r.status === 409, r.status);
+
+    n8nCalls.length = 0;
+    r = await wa(a.cookie, 'POST', { phone: '8187654321' });
+    check('cambiar de número', r.status === 200 && (await r.json()).data.phone === '8187654321', r.status);
+    check('  n8n recibe el número anterior para quitarlo', n8nCalls[0]?.body.numeroAnterior === '8112345678', J(n8nCalls[0]?.body.numeroAnterior));
+
+    n8nFail = true;
+    r = await wa(b.cookie, 'POST', { phone: '8100000001' });
+    check('si n8n falla -> 502', r.status === 502, r.status);
+    r = await wa(b.cookie, 'GET');
+    check('  y no se guarda nada', (await r.json()).data.phone === null);
+    n8nFail = false;
+
+    // Número dado de alta a mano en n8n con otro carrusel (el servidor no lo conoce).
+    n8nTaken.add('8100000009');
+    r = await wa(b.cookie, 'POST', { phone: '8100000009' });
+    check('número que n8n ya tiene con otro carrusel -> 409', r.status === 409, r.status);
+    n8nTaken.clear();
+
+    r = await wa(b.cookie, 'GET', undefined, `?userId=${a.userId}`);
+    check('usuario no ve el WhatsApp de otro (403)', r.status === 403, r.status);
+    r = await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } });
+    check('el super-admin ve el número en la lista', (await r.json()).data.users.find((u) => u.userId === a.userId)?.whatsappPhone === '8187654321');
+
+    n8nCalls.length = 0;
+    r = await adminJson(`/api/users/token?userId=${a.userId}`, 'POST', {});
+    const regen = (await r.json()).data;
+    check('regenerar token con número vinculado actualiza la fila de n8n', r.status === 200 && n8nCalls[0]?.body.token === regen?.token, r.status);
+
+    n8nCalls.length = 0;
+    r = await wa(adminCookie, 'DELETE', undefined, `?userId=${a.userId}`);
+    check('el super-admin desvincula', r.status === 200 && (await r.json()).data.phone === null, r.status);
+    check('  n8n recibe delete', n8nCalls[0]?.body.action === 'delete' && n8nCalls[0]?.body.numero === '8187654321');
+
+    await wa(b.cookie, 'POST', { phone: '8100000002' });
+    n8nCalls.length = 0;
+    r = await fetch(BASE + `/api/users?userId=${b.userId}`, { method: 'DELETE', headers: { cookie: adminCookie } });
+    check('borrar un usuario quita su número de n8n', r.status === 200 && n8nCalls[0]?.body.action === 'delete' && n8nCalls[0]?.body.numero === '8100000002', r.status);
+  }
+
+  console.log('\n== Tope mensual de imágenes ==');
+  {
+    await adminJson('/api/users', 'POST', { name: 'Tope', email: 'tope-q@example.com', password: 'clave-larga-123' });
+    const list = (await (await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } })).json()).data.users;
+    const qId = list.find((u) => u.email === 'tope-q@example.com').userId;
+    const other = list.find((u) => u.userId === 'USER1');
+    check('lista trae el tope (50 por defecto)', other?.quota?.limit === 50, J(other?.quota));
+    const qToken = (await (await adminJson(`/api/users/token?userId=${qId}`, 'POST', {})).json()).data.token;
+    const quotaOf = async () => (await clientPost(`/api/settings-read/${qId}`, qToken, { n: Math.random() })).json.data?.quota;
+
+    r = await adminJson(`/api/users?userId=${qId}`, 'PATCH', { monthlyImageLimit: -1 });
+    check('tope propio inválido -> 400', r.status === 400, r.status);
+    r = await adminJson(`/api/users?userId=${qId}`, 'PATCH', { monthlyImageLimit: 2 });
+    check('tope propio de 2', r.status === 200 && (await r.json()).data?.monthlyImageLimit === 2, r.status);
+    let q = await quotaOf();
+    check('  settings-read entrega la cuota (0 de 2)', q?.used === 0 && q?.limit === 2 && q?.remaining === 2, J(q));
+
+    for (const n of [1, 2]) await clientPost(`/api/usage/${qId}`, qToken, { eventId: `tope-${n}`, kind: 'image' });
+    q = await quotaOf();
+    check('  tras 2 imágenes: remaining 0', q?.used === 2 && q?.remaining === 0, J(q));
+    r = await adminJson(`/api/generate?userId=${qId}`, 'POST', {});
+    check('  generate con el tope lleno -> 429', r.status === 429, r.status);
+
+    r = await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: 'mucho' });
+    check('tope global inválido -> 400', r.status === 400, r.status);
+    r = await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: 1 });
+    check('tope global de 1', r.status === 200 && (await r.json()).data?.monthlyImageLimit === 1, r.status);
+    q = await quotaOf();
+    check('  el propio (2) manda sobre el global (1)', q?.limit === 2, J(q));
+    r = await adminJson(`/api/users?userId=${qId}`, 'PATCH', { monthlyImageLimit: null });
+    q = await quotaOf();
+    check('  sin propio usa el global', q?.limit === 1 && q?.remaining === 0 && q?.own === null, J(q));
+    r = await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: null });
+    q = await quotaOf();
+    check('  global null = sin tope', q?.limit === null && q?.remaining === null, J(q));
+    r = await fetch(BASE + '/api/usage', { headers: { cookie: adminCookie } });
+    check('  GET config muestra el tope global', (await r.json()).data?.monthlyImageLimit === null, r.status);
+    await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: 50 });
+  }
+
   console.log('\n== Health ==');
   body = '{}';
   r = await fetch(BASE + '/api/health', { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-secret': sign(body) }, body });
@@ -1223,6 +1527,7 @@ try {
   console.error('\nERROR:', err.message);
 } finally {
   child.kill();
+  n8nServer.close();
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
 }
 

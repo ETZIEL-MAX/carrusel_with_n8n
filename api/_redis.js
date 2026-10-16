@@ -122,6 +122,12 @@ export async function setNx(key, value, ttlSeconds) {
   return res === 'OK';
 }
 
+// Lee y borra en un solo paso (tokens de un solo uso). Devuelve el valor o null.
+export async function getDel(key) {
+  const raw = await command('GETDEL', key);
+  return raw == null ? null : String(raw);
+}
+
 export async function exists(key) {
   return Number(await command('EXISTS', key)) > 0;
 }
