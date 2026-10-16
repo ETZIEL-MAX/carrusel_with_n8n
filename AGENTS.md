@@ -206,6 +206,7 @@ api/_mail.js    sendMail (Resend or local outbox) + Spanish templates
 api/_turnstile.js  Cloudflare Turnstile check
 api/whatsapp.js GET | POST | DELETE (cookie) — link the client's WhatsApp number
 api/_n8n-numbers.js  pushNumber → n8n flow "Alta de número"
+api/qr.js       GET (cookie) — { url, dataUrl }: QR PNG of the public carousel (APP_URL), for the settings panel
 scripts/migrate-storage.mjs  register pre-quota files (never deletes)
 scripts/server.mjs  standalone local/Docker server
 scripts/test-e2e.mjs  end-to-end test (npm test)

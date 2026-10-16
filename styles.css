@@ -680,6 +680,50 @@ a.btn {
   min-width: 0;
 }
 
+/* Código QR del carrusel (ajustes): fondo blanco para que el lector lo lea con el tema oscuro */
+.qr-box {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.qr-box__code {
+  display: grid;
+  place-items: center;
+  width: 11rem;
+  min-height: 11rem;
+  padding: 0.6rem;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.qr-box__code img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.qr-box__code .hint {
+  color: #555;
+  margin: 0;
+}
+
+.qr-box__actions {
+  display: grid;
+  gap: 0.5rem;
+  flex: 1 1 12rem;
+  min-width: 0;
+  justify-items: start;
+}
+
+.qr-box__url {
+  margin: 0;
+  font-size: 0.85rem;
+  word-break: break-all;
+  opacity: 0.8;
+}
+
 @keyframes panel-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

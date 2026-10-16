@@ -1138,6 +1138,7 @@ function escapeHtml(str) {
     }
 
     loadWhatsapp(isSelfService ? null : user.userId);
+    loadQr(isSelfService ? null : user.userId);
 
     // Load generation settings async
     const genUserId = isSelfService ? null : user.userId;
@@ -1193,6 +1194,65 @@ function escapeHtml(str) {
       waError.textContent = err.message;
     }
   }
+
+  // Código QR del carrusel abierto: el propio usuario o el super-admin (?userId).
+  const qrImg = document.getElementById('qrImg');
+  const qrStatus = document.getElementById('qrStatus');
+  const qrUrl = document.getElementById('qrUrl');
+  const qrDownloadBtn = document.getElementById('qrDownloadBtn');
+  const qrPrintBtn = document.getElementById('qrPrintBtn');
+  const qrError = document.getElementById('qrError');
+  let qrCode = null; // { url, dataUrl } del carrusel abierto
+
+  async function loadQr(userId) {
+    qrCode = null;
+    qrImg.hidden = true;
+    qrDownloadBtn.hidden = true;
+    qrPrintBtn.hidden = true;
+    qrUrl.textContent = '';
+    qrError.textContent = '';
+    qrStatus.hidden = false;
+    qrStatus.textContent = 'Cargando…';
+    try {
+      const data = (await API.getQr(userId)).data;
+      const id = data.url.split('/').pop();
+      qrCode = data;
+      qrImg.src = data.dataUrl;
+      qrImg.hidden = false;
+      qrStatus.hidden = true;
+      qrUrl.textContent = data.url;
+      qrDownloadBtn.href = data.dataUrl;
+      qrDownloadBtn.download = `qr-${id}.png`;
+      qrDownloadBtn.hidden = false;
+      qrPrintBtn.hidden = false;
+    } catch (err) {
+      qrStatus.textContent = '';
+      qrStatus.hidden = true;
+      qrError.textContent = err.message;
+    }
+  }
+
+  // La ventana de impresión no lleva scripts: la CSP los bloquearía. Imprime al cargar la imagen.
+  qrPrintBtn.addEventListener('click', () => {
+    if (!qrCode) return;
+    const w = window.open('', '_blank');
+    if (!w) {
+      qrError.textContent = 'Permite las ventanas emergentes para imprimir el QR.';
+      return;
+    }
+    const doc = w.document;
+    doc.title = `QR ${qrCode.url.split('/').pop()}`;
+    doc.body.style.cssText = 'margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;font-family:sans-serif;';
+    const img = doc.createElement('img');
+    img.alt = 'Código QR del carrusel';
+    img.style.cssText = 'width:90vmin;height:90vmin;';
+    img.onload = () => { w.focus(); w.print(); };
+    img.src = qrCode.dataUrl;
+    const p = doc.createElement('p');
+    p.textContent = qrCode.url;
+    p.style.cssText = 'font-size:20px;word-break:break-all;text-align:center;padding:0 16px;';
+    doc.body.append(img, p);
+  });
 
   waLinkBtn.addEventListener('click', async () => {
     waError.textContent = '';

@@ -62,6 +62,7 @@ const generateHandler = await import('../api/generate.js');
 const usageHandler = await import('../api/usage.js');
 const accountHandler = await import('../api/account.js');
 const whatsappHandler = await import('../api/whatsapp.js');
+const qrHandler = await import('../api/qr.js');
 
 // Subidas que reciben el cuerpo como flujo (se escribe a disco, no se junta en memoria).
 const STREAM_UPLOADS = {
@@ -87,6 +88,7 @@ const API_ROUTES = {
   '/api/account/forgot': accountHandler,
   '/api/account/reset': accountHandler,
   '/api/whatsapp': whatsappHandler,
+  '/api/qr': qrHandler,
 };
 
 // ---- Seed de ejemplo (solo si está vacío y NO en producción) ----

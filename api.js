@@ -89,6 +89,8 @@ const API = (() => {
       request(userId ? withUserId('/api/whatsapp', userId) : '/api/whatsapp', { method: 'POST', body: JSON.stringify({ phone }) }),
     unlinkWhatsapp: (userId) =>
       request(userId ? withUserId('/api/whatsapp', userId) : '/api/whatsapp', { method: 'DELETE' }),
+    // QR del carrusel público: { url, dataUrl } (PNG en data URL)
+    getQr: (userId) => request(userId ? withUserId('/api/qr', userId) : '/api/qr'),
 
     // Cuenta propia: registro, verificación de correo y recuperación de contraseña
     account: {

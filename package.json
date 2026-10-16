@@ -20,6 +20,7 @@
     "@vercel/blob": "^2.8.0",
     "ioredis": "^5.4.1",
     "jose": "^5.2.0",
+    "qrcode": "^1.5.4",
     "sharp": "^0.35.5"
   },
   "devDependencies": {

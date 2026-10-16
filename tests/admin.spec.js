@@ -6,8 +6,12 @@ test.describe.configure({ mode: 'serial' });
 test('configuración: paleta, Drive y orientación se guardan y persisten', async ({ page }) => {
   const w = watchPage(page);
   await uiLogin(page);
+  // El modal carga sus ajustes en segundo plano: esperar esa respuesta antes de escribir,
+  // o la carga pisa lo escrito con el valor guardado (vacío).
+  const settingsLoaded = page.waitForResponse((r) => r.url().includes('/api/settings') && r.request().method() === 'GET');
   await page.click('#userSettingsBtn');
   await expect(page.locator('#settingsModalBackdrop')).toHaveClass(/is-open/);
+  await settingsLoaded;
 
   const drive = 'https://drive.google.com/drive/folders/PLAYWRIGHT123';
   await page.fill('#genDriveUrl', drive);
@@ -173,4 +177,17 @@ test('borrar imagen la quita del carrusel y del disco', async ({ page }) => {
   const list = await (await page.request.get('/api/carrusel?userId=USER1')).json();
   expect(list.data.images.some((i) => i.url === url)).toBe(false);
   expect((await page.request.get(url)).status()).toBe(404); // archivo borrado
+});
+
+test('código QR: aparece en los ajustes con la URL del carrusel', async ({ page }) => {
+  await uiLogin(page);
+  const qrLoaded = page.waitForResponse((r) => r.url().includes('/api/qr') && r.request().method() === 'GET');
+  await page.click('#userSettingsBtn');
+  await expect(page.locator('#settingsModalBackdrop')).toHaveClass(/is-open/);
+  await qrLoaded;
+  await expect(page.locator('#qrImg')).toBeVisible();
+  await expect(page.locator('#qrImg')).toHaveAttribute('src', /^data:image\/png;base64,/);
+  await expect(page.locator('#qrUrl')).toContainText('/carrusel/USER');
+  await expect(page.locator('#qrDownloadBtn')).toBeVisible();
+  await expect(page.locator('#qrPrintBtn')).toBeVisible();
 });

@@ -1390,6 +1390,41 @@ async function runTests() {
     check('  el siguiente registro no reutiliza su número', lateId === `USER${maxId + 1}`, lateId);
   }
 
+  console.log('\n== Código QR del carrusel ==');
+  {
+    let ipQ = 0;
+    const ipq = () => `10.80.0.${++ipQ}`;
+    const login = async (email) => {
+      await adminJson('/api/users', 'POST', { name: email, email, password: 'clave-larga-123' });
+      const res = await fetch(BASE + '/api/auth', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ipq() }, body: J({ email, password: 'clave-larga-123' }) });
+      const body = await res.json();
+      return { cookie: (res.headers.get('set-cookie') || '').split(';')[0], userId: body.data?.userId };
+    };
+    const qr = (cookie, query = '') => fetch(BASE + '/api/qr' + query, { headers: cookie ? { cookie } : {} });
+    const qa = await login('qr-a@example.com');
+    const qb = await login('qr-b@example.com');
+
+    let r = await qr(null);
+    check('QR sin sesión -> 401', r.status === 401, r.status);
+
+    r = await qr(qa.cookie);
+    let q = (await r.json()).data;
+    check('QR del propio carrusel -> 200', r.status === 200, r.status);
+    check('  la URL es el carrusel público del usuario', q?.url?.endsWith(`/carrusel/${qa.userId}`), J(q?.url));
+    check('  el QR es un PNG en data URL', /^data:image\/png;base64,/.test(q?.dataUrl || ''));
+    const png = Buffer.from((q?.dataUrl || '').split(',')[1] || '', 'base64');
+    check('  y empieza con la firma PNG', png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
+
+    r = await qr(qa.cookie, `?userId=${qb.userId}`);
+    check('usuario no pide el QR de otro (403)', r.status === 403, r.status);
+
+    r = await qr(adminCookie);
+    check('super-admin sin userId -> 400', r.status === 400, r.status);
+    r = await qr(adminCookie, `?userId=${qb.userId}`);
+    q = (await r.json()).data;
+    check('super-admin con userId -> QR de ese carrusel', r.status === 200 && q?.url?.endsWith(`/carrusel/${qb.userId}`), r.status);
+  }
+
   console.log('\n== WhatsApp vinculado desde el panel ==');
   {
     let ipW = 0;

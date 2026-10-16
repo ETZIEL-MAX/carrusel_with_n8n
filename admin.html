@@ -369,6 +369,23 @@
         <p class="error-text" id="waError"></p>
       </div>
 
+      <div id="qrSection">
+        <h3 class="modal__section">Código QR</h3>
+        <p class="hint">Al escanearlo se abre el carrusel público. Descárgalo o imprímelo para ponerlo donde lo necesites.</p>
+        <div class="qr-box">
+          <div class="qr-box__code">
+            <img id="qrImg" alt="Código QR del carrusel" hidden />
+            <p class="hint" id="qrStatus">Cargando…</p>
+          </div>
+          <div class="qr-box__actions">
+            <p class="qr-box__url" id="qrUrl"></p>
+            <a class="btn" id="qrDownloadBtn" hidden>Descargar PNG</a>
+            <button class="btn" type="button" id="qrPrintBtn" hidden>Imprimir</button>
+          </div>
+        </div>
+        <p class="error-text" id="qrError"></p>
+      </div>
+
       <h3 class="modal__section" id="genSection">Generación</h3>
       <div class="field">
         <label for="genDriveUrl">Google Drive — URL de la carpeta</label>
