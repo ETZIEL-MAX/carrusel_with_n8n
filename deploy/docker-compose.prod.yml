@@ -22,6 +22,7 @@ services:
       IMAGE_STORAGE: "local"
       REDIS_URL: "redis://redis:6379"
       PORT: "8080"
+      ALLOW_GLOBAL_WEBHOOK_SECRET: "0"  # todos los clientes tienen token propio (crt_); sin firma global sin marca de tiempo (anti-replay)
       NODE_OPTIONS: "--max-old-space-size=128"
     ports:
       - "127.0.0.1:8080:8080"
