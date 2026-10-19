@@ -275,6 +275,7 @@ function escapeHtml(str) {
   });
 
   document.addEventListener('keydown', (e) => {
+    if (e.target.closest?.('#notice button')) return; // OK/Enter/espacio del control activan el botón del aviso
     if (e.key === 'ArrowRight') { next(); startAutoplay(); }
     else if (e.key === 'ArrowLeft') { prev(); startAutoplay(); }
     else if (e.key === ' ') { e.preventDefault(); paused ? resume() : pause(); }
@@ -315,6 +316,57 @@ function escapeHtml(str) {
 
   const storeKey = () => `carrusel:last:${userId}`;
 
+  // Id de esta pantalla: cuenta contra el límite de pantallas del plan. Se crea una vez y
+  // vive en localStorage; sin storage se usa uno por sesión.
+  const DEVICE_KEY = 'carrusel:device';
+  const makeDeviceId = () => (crypto.randomUUID ? crypto.randomUUID()
+    : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+  let deviceId = (() => {
+    try {
+      let id = localStorage.getItem(DEVICE_KEY);
+      if (!id) {
+        id = makeDeviceId();
+        localStorage.setItem(DEVICE_KEY, id);
+      }
+      return id;
+    } catch {
+      return makeDeviceId();
+    }
+  })();
+
+  // Reinicia el id de esta pantalla: el servidor la toma como una TV nueva (cuenta para el
+  // límite del plan). Se usa cuando la quitaron desde el panel.
+  function resetDeviceId() {
+    deviceId = makeDeviceId();
+    try { localStorage.setItem(DEVICE_KEY, deviceId); } catch { /* sin storage: dura la sesión */ }
+    refresh();
+  }
+
+  // Aviso a pantalla completa (carrusel suspendido / sin lugar / pantalla desconectada).
+  const noticeEl = document.getElementById('notice');
+  const noticeBtn = document.getElementById('noticeBtn');
+  noticeBtn?.addEventListener('click', resetDeviceId);
+  function showNotice(title, text, { reconnect = false } = {}) {
+    images = [];
+    refresh._sig = null;
+    build();
+    emptyEl.hidden = true;
+    if (!noticeEl) return;
+    noticeEl.querySelector('.empty__title').textContent = title;
+    noticeEl.querySelector('.empty__text').textContent = text;
+    if (noticeBtn) noticeBtn.hidden = !reconnect;
+    noticeEl.hidden = false;
+    // Con control remoto: el botón ya queda seleccionado, basta con OK/Enter.
+    if (reconnect) noticeBtn?.focus();
+  }
+  const hideNotice = () => { if (noticeEl) noticeEl.hidden = true; };
+  const forgetList = () => {
+    try {
+      localStorage.removeItem(storeKey());
+      localStorage.removeItem(storeKey() + ':seconds');
+    } catch { /* sin storage */ }
+  };
+
   // Aplica una lista de imágenes; solo reconstruye si de verdad cambió algo.
   function applyList(incoming, seconds) {
     const signature = JSON.stringify([seconds, incoming.map((i) => [i.id, i.url, i.alt, i.order, i.view, i.duration, i.blur === true])]);
@@ -350,10 +402,29 @@ function escapeHtml(str) {
   async function refresh() {
     try {
       if (!userId) return;
-      const res = await fetch(`/api/carrusel?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
+      const res = await fetch(`/api/carrusel?userId=${encodeURIComponent(userId)}&device=${encodeURIComponent(deviceId)}`, { cache: 'no-store' });
+      if (res.status === 402) {
+        // Prueba o plan vencido: no se muestra nada, tampoco la copia guardada.
+        reloadIfNewBuild(res);
+        forgetList();
+        showNotice('Carrusel suspendido', 'El plan de esta cuenta no está activo. Contacta al administrador.');
+        return;
+      }
       if (!res.ok) throw new Error('fetch failed');
       reloadIfNewBuild(res);
       const data = await res.json();
+      if (data?.data?.deviceRevoked) {
+        forgetList();
+        showNotice('Pantalla desconectada', 'Esta pantalla se quitó desde el panel. Si quieres usarla otra vez, conéctala como pantalla nueva.', { reconnect: true });
+        return;
+      }
+      if (data?.data?.deviceBlocked) {
+        forgetList();
+        const limit = data.data.limit;
+        showNotice('Límite de pantallas alcanzado', `El plan permite ${limit} pantalla${limit === 1 ? '' : 's'}. Libera una desde el panel para usar esta.`);
+        return;
+      }
+      hideNotice();
       const list = data?.data?.images ?? data?.images;
       const incoming = Array.isArray(list) ? list : [];
       const seconds = data?.data?.slideDuration ?? data?.slideDuration ?? DEFAULT_SECONDS;

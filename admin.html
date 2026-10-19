@@ -86,6 +86,9 @@
               <label for="signupPassword2">Repite la contraseña</label>
               <input type="password" id="signupPassword2" minlength="10" maxlength="200" autocomplete="new-password" required />
             </div>
+            <div class="field">
+              <label class="check" for="signupTerms"><input type="checkbox" id="signupTerms" required /> Tengo 18 años o más y acepto los <a href="/terminos" target="_blank" rel="noopener">Términos y condiciones</a> y el <a href="/privacidad" target="_blank" rel="noopener">Aviso de privacidad</a></label>
+            </div>
             <div class="captcha" id="signupCaptcha"></div>
             <p class="error-text" id="signupError"></p>
             <button class="btn btn--primary" type="submit" id="signupBtn">Crear cuenta</button>
@@ -168,12 +171,28 @@
       <form class="plan-card plan-card--row" id="limitForm" novalidate>
         <div>
           <label class="plan-card__label" for="limitInput">Tope de imágenes generadas al mes</label>
-          <p class="hint">Para cada cuenta que no tenga un tope propio. Vacío = sin tope. Al llegar al tope el bot avisa y deja de generar hasta el mes siguiente.</p>
+          <p class="hint">Para las cuentas sin plan (anteriores a los planes) y sin tope propio; las demás usan el de su plan. Vacío = sin tope. Al llegar al tope el bot avisa y deja de generar hasta el mes siguiente.</p>
         </div>
         <div class="plan-card__controls">
           <input type="number" id="limitInput" name="limitInput" min="0" max="100000" step="1" inputmode="numeric" placeholder="Sin tope" />
           <button class="btn" type="submit" id="limitSaveBtn">Guardar</button>
         </div>
+      </form>
+    </div>
+
+    <div class="plan-panel">
+      <form class="plan-card" id="plansForm" novalidate>
+        <div>
+          <span class="plan-card__label">Planes</span>
+          <p class="hint">Cada cuenta nueva empieza con 7 días gratis del plan Básico. Vacío en imágenes o espacio = sin tope. Los cambios aplican de inmediato a todas las cuentas con ese plan.</p>
+        </div>
+        <div class="plans-table-wrap">
+          <table class="plans-table">
+            <thead><tr><th>Plan</th><th>Pantallas</th><th>Imágenes/mes</th><th>Espacio (MB)</th><th>Precio MXN</th></tr></thead>
+            <tbody id="plansBody"></tbody>
+          </table>
+        </div>
+        <div class="plan-card__controls"><button class="btn" type="submit" id="plansSaveBtn">Guardar planes</button></div>
       </form>
     </div>
 
@@ -204,7 +223,23 @@
       </div>
     </header>
 
+    <div class="plan-alert" id="planAlert" role="alert" hidden></div>
+
     <div class="plan-panel" id="planPanel" hidden>
+      <div class="plan-card" id="subCard">
+        <div class="plan-card__head">
+          <span class="plan-card__label">Plan</span>
+          <span class="plan-card__value" id="subText">—</span>
+        </div>
+        <p class="hint" id="subHint"></p>
+        <div class="plan-card__head">
+          <span class="plan-card__label">Pantallas</span>
+          <span class="plan-card__value" id="devText">—</span>
+        </div>
+        <ul class="device-list" id="deviceList"></ul>
+        <p class="hint">Para poner otra televisión, quita la que ya no uses. La que quites deja de mostrar el carrusel aunque siga encendida.</p>
+        <div class="plan-card__controls"><button class="btn btn--small" type="button" id="resetDevicesBtn" hidden>Liberar todas las pantallas</button></div>
+      </div>
       <div class="plan-card">
         <div class="plan-card__head">
           <span class="plan-card__label">Espacio</span>
@@ -224,6 +259,22 @@
         <p class="hint" id="usageHint"></p>
       </div>
     </div>
+
+    <section class="plan-card ai-panel" id="aiPanel" aria-labelledby="aiTitle" hidden>
+      <div class="plan-card__head">
+        <h2 class="plan-card__label" id="aiTitle">Crear con IA</h2>
+        <span class="plan-card__value" id="aiQuota"></span>
+      </div>
+      <form class="ai-form" id="aiForm" novalidate>
+        <div class="field">
+          <label for="aiPrompt">¿Qué imagen quieres?</label>
+          <textarea id="aiPrompt" name="aiPrompt" maxlength="1000" rows="2" placeholder="Ej.: Póster de tacos al pastor, 3 por $50, solo hoy"></textarea>
+        </div>
+        <button class="btn btn--primary" type="submit" id="aiGenerateBtn">Generar</button>
+      </form>
+      <p class="hint">La imagen llega aquí como borrador: la revisas, pides cambios y la publicas cuando te guste. Cada imagen generada cuenta en tu límite del mes.</p>
+      <div class="draft-grid" id="draftGrid"></div>
+    </section>
 
     <div class="upload-status" id="uploadStatus" hidden>
       <div class="upload-status__text" id="uploadStatusText">Subiendo…</div>
@@ -308,6 +359,18 @@
       <p class="error-text" id="settingsFormError"></p>
 
       <div id="planSection">
+        <h3 class="modal__section">Plan</h3>
+        <div class="field">
+          <label for="setPlan">Plan</label>
+          <select id="setPlan" name="setPlan"></select>
+          <p class="hint" id="setPlanHint"></p>
+        </div>
+        <div class="field">
+          <label for="setPlanEnds">Activo hasta (opcional)</label>
+          <input type="date" id="setPlanEnds" name="setPlanEnds" />
+          <p class="hint">Vacío = sin fecha de fin. Al guardar un plan aquí, la cuenta queda activa (pago manual).</p>
+        </div>
+
         <h3 class="modal__section">Espacio</h3>
         <div class="field">
           <label for="setStorageLimit">Límite de almacenamiento (MB)</label>
@@ -501,6 +564,8 @@
   </div>
 
   <div class="toast-wrap" id="toasts"></div>
+
+  <footer class="legal-links"><a href="/terminos">Términos y condiciones</a> · <a href="/privacidad">Aviso de privacidad</a></footer>
 
   <script src="/api.js"></script>
   <script src="/admin.js"></script>

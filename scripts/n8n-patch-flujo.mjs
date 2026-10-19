@@ -2,6 +2,8 @@
 //   - los nodos de firma usan n8n/firma.js y el token de la fila del cliente (sin secreto escrito)
 //   - el flujo busca su token en la tabla whatsapp_numeros (Buscar token -> Adjuntar token)
 //   - cada generación se reporta a /api/usage/USERx (Firmar consumo -> Reportar consumo)
+//   - cada mensaje que el bot manda por WhatsApp también (kind 'message'), por el mismo nodo
+//   - antes de generar un póster se revisa el cupo del mes (quota de settings-read): sin cupo, avisa y no genera
 //   - el tamaño del póster sale de formato + resolución del panel (n8n/formato.js), el logo escala con él
 //   - el prompt se redacta con una llamada HTTP a OpenRouter (Armar prompt -> Redactar prompt) para tener sus tokens
 //   - la imagen, el texto y el audio reportan su consumo
@@ -18,6 +20,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { ordenarLienzo } from './n8n-lienzo.mjs';
+
+// Dirección pública del carrusel a la que llama el flujo. Las URLs de los otros dominios
+// conocidos se reemplazan por esta en todos los nodos. Para el cambio de dominio:
+//   CARRUSEL_URL=https://eninternet.tv node scripts/n8n-patch-flujo.mjs ...
+export const APP_BASE = (process.env.CARRUSEL_URL || 'https://carrusel.etziel.com').replace(/\/+$/, '');
+export const KNOWN_BASES = ['https://carrusel.etziel.com', 'https://eninternet.tv'];
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -158,6 +166,7 @@ const VISTA_IMAGEN = [
   "try { if ($('Init contexto').first().json.lleva_logo === false) { nodoImagen = 'Optimizar imagen sin logo'; } } catch (e5) {}",
   'try { bin = $(nodoImagen).last().binary; } catch (e3) {}',
 ].join('\n');
+const SIN_CUPO = "={{ '⚠️ Llegaste al límite de *' + $('Traer settings').first().json.data.quota.limit + '* imágenes de este mes.\\n\\nSe renueva el día 1. Si necesitas más, contáctanos para ampliar tu plan.' }}";
 const condicion = (id, leftValue, operator, rightValue = '') => ({
   conditions: {
     options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
@@ -175,7 +184,7 @@ const ARMAR_RESPUESTA = [
   "if (r && typeof r.data === 'string' && r.success === undefined) { try { r = JSON.parse(r.data); } catch (e) {} }",
   'var anio;',
   `try { anio = $now.setZone('${ZONA}').year; } catch (e) {}`,
-  "return [{ json: armarRespuesta(cmd, r, 'https://carrusel.etziel.com', anio) }];",
+  `return [{ json: armarRespuesta(cmd, r, '${APP_BASE}', anio) }];`,
 ].join('\n');
 const AYUDA = [
   '🤖 *Comandos del carrusel*',
@@ -407,6 +416,40 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   wf.connections['Buscar token'] = { main: link('Adjuntar token') };
   wf.connections['Adjuntar token'] = { main: link('Variables') };
 
+  // 3b. Cupo del mes: settings-read trae quota { used, limit, remaining }. Con remaining 0 no se
+  // genera y se avisa al cliente. Sin quota (servidor viejo) se deja pasar.
+  const ayuda = get('Es ayuda');
+  const ayudaOut = wf.connections['Es ayuda']?.main;
+  if (!ayudaOut?.[1]?.some((c) => c.node === 'Init contexto' || c.node === 'Hay cupo')) {
+    throw new Error('"Es ayuda" (no) ya no va a "Init contexto"');
+  }
+  const enviarAyuda = get('Enviar ayuda');
+  addNode(wf.nodes, {
+    parameters: condicion('hay-cupo-1', "={{ ($('Traer settings').first().json.data?.quota?.remaining ?? 1) !== 0 }}", { type: 'boolean', operation: 'true', singleValue: true }),
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0030',
+    name: 'Hay cupo',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.2,
+    position: [ayuda.position[0] + 240, ayuda.position[1]],
+    notes: 'Cupo de imagenes del mes (plan o tope del panel). Sin cupo no se genera.',
+  });
+  addNode(wf.nodes, {
+    parameters: {
+      ...enviarAyuda.parameters,
+      textBody: SIN_CUPO,
+      additionalFields: {},
+    },
+    id: '5d1f3c0a-7b1e-4c55-9a55-0c1a5e7f0031',
+    name: 'Sin cupo',
+    type: enviarAyuda.type,
+    typeVersion: enviarAyuda.typeVersion,
+    position: [ayuda.position[0] + 480, ayuda.position[1] - 200],
+    credentials: enviarAyuda.credentials,
+  });
+  ayudaOut[1] = [{ node: 'Hay cupo', type: 'main', index: 0 }];
+  wf.connections['Hay cupo'] = { main: [link('Init contexto')[0], link('Sin cupo')[0]] };
+  // "Sin cupo" -> "Firmar consumo" lo conecta el conteo de mensajes (punto 4).
+
   // 4. Reporte de consumo. Va ARRIBA de "Fijar foto": con executionOrder v1 la rama de
   // arriba corre primero; abajo, el reporte esperaría a que el cliente apruebe el póster.
   const fijar = get('Fijar foto');
@@ -455,6 +498,15 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   }
   wf.connections['Firmar consumo'] = { main: link('Reportar consumo') };
   delete wf.connections['Reportar consumo'];
+  // Cada nodo que envía por WhatsApp (send / sendAndWait) también pasa por "Firmar consumo":
+  // armarConsumo reconoce la respuesta y la cuenta como un mensaje.
+  for (const n of wf.nodes) {
+    if (n.type !== 'n8n-nodes-base.whatsApp' || !['send', 'sendAndWait'].includes(n.parameters?.operation)) continue;
+    const main = wf.connections[n.name]?.main || [[]];
+    const out = main[0] || (main[0] = []);
+    if (!out.some((c) => c.node === 'Firmar consumo')) out.push({ node: 'Firmar consumo', type: 'main', index: 0 });
+    wf.connections[n.name] = { ...(wf.connections[n.name] || {}), main };
+  }
 
   // 5. Tamaño del póster por resolución, logo que escala con él y reglas de lienzo completo.
   const init = get('Init contexto');
@@ -740,7 +792,14 @@ export function patchWorkflow(workflow, snippets, { lienzo = true } = {}) {
   const borrado = get('Confirmar borrado').parameters;
   borrado.approvalOptions = { values: { ...(borrado.approvalOptions?.values || {}), ...BORRADO } };
 
-  // 13. Lienzo: cada nodo en su sección, con su nota (scripts/n8n-lienzo.mjs).
+  // 13. Dominio: cualquier URL del carrusel en los nodos apunta a APP_BASE.
+  for (const n of wf.nodes) {
+    let s = JSON.stringify(n.parameters);
+    for (const other of KNOWN_BASES) if (other !== APP_BASE) s = s.split(other).join(APP_BASE);
+    n.parameters = JSON.parse(s);
+  }
+
+  // 14. Lienzo: cada nodo en su sección, con su nota (scripts/n8n-lienzo.mjs).
   if (lienzo) ordenarLienzo(wf);
 
   if ('nodeCount' in wf) wf.nodeCount = wf.nodes.length;

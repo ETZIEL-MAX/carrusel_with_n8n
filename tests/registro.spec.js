@@ -33,6 +33,7 @@ test('crear cuenta, confirmar el correo y entrar directo al panel', async ({ pag
   await page.fill('#signupEmail', email);
   await page.fill('#signupPassword', 'clave-larga-123');
   await page.fill('#signupPassword2', 'otra-clave-123');
+  await page.check('#signupTerms');
   await page.click('#signupBtn');
   await expect(page.locator('#signupError')).toHaveText(/no coinciden/);
 
@@ -55,7 +56,7 @@ test('olvidé mi contraseña: el enlace del correo permite poner una nueva', asy
   const email = `olvido-${Date.now()}@example.com`;
   await useFreshIp(page);
   const reg = await page.request.post('/api/account/register', {
-    data: { name: 'Olvidadizo', email, password: 'clave-original-1' },
+    data: { name: 'Olvidadizo', email, password: 'clave-original-1', acceptTerms: true },
   });
   expect(reg.status()).toBe(200);
   await page.request.post('/api/account/verify', { data: { token: (await linkFor(email, 'verificar')).split('=')[1] } });

@@ -1,7 +1,7 @@
 import { 
   getImages, addImage, updateImage, deleteImage, reorderImages, isVisibleAt,
   validateImageData, validateImagePatch,
-  requireSession, checkRateLimit, getClientIp, resolveUserId,
+  requireSession, checkRateLimit, getClientIp, resolveUserId, planBlockedResponse,
   errorResponse, successResponse,
 } from './_utils.js';
 
@@ -46,6 +46,8 @@ export async function POST(request) {
   
   const userId = await getUserIdFromRequest(request, auth.payload);
   if (userId instanceof Response) return userId;
+  const blocked = await planBlockedResponse(userId);
+  if (blocked) return blocked;
   
   const clientIp = getClientIp(request);
   const rateLimit = checkRateLimit(`images:post:${clientIp}:${userId}`, RATE_LIMIT);

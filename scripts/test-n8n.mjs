@@ -77,6 +77,8 @@ check('audio (transcripción): también kind text', (() => {
 check('texto sin usage -> no se reporta', armarConsumo({ choices: [{ message: { content: 'FALSE' } }] }, '77', 0) === null);
 check('texto con tokens en cero -> no se reporta', armarConsumo({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }, '77', 0) === null);
 check('la imagen sigue igual', armarConsumo({ model: 'wan2.7-image-pro', usage: {} }, '77', 1).eventId === '77-gen-1');
+check('mensaje de WhatsApp enviado -> 1 mensaje con el id de Meta', J(armarConsumo({ messaging_product: 'whatsapp', contacts: [{ wa_id: '52' }], messages: [{ id: 'wamid.ABC' }] }, '77', 2)) === J({ eventId: '77-msg-wamid.ABC', kind: 'message', count: 1 }));
+check('respuesta de un sendAndWait -> 1 mensaje', J(armarConsumo({ data: { approved: false } }, '77', 5)) === J({ eventId: '77-msg-5', kind: 'message', count: 1 }));
 check('una llamada que falló (continueRegularOutput deja {error}) -> no se reporta', armarConsumo({ error: { message: 'fallo' } }, '77', 0) === null && armarConsumo({ error: 'x', choices: [] }, '77', 0) === null);
 
 console.log('\n== n8n/formato.js ==');
@@ -313,7 +315,7 @@ if (!existsSync(exportPath)) {
   const node = (n) => out.nodes.find((x) => x.name === n);
   const next = (n) => (out.connections[n]?.main?.[0] || []).map((x) => x.node);
 
-  check('97 nodos y 12 notas', out.nodes.length === 109, out.nodes.length);
+  check('99 nodos y 12 notas', out.nodes.length === 111, out.nodes.length);
   check('nombres de nodo sin repetir', new Set(out.nodes.map((n) => n.name)).size === out.nodes.length);
   check('idempotente', JSON.stringify(patchWorkflow(out, snippets)) === JSON.stringify(out));
   check('no muta la entrada', JSON.stringify(copia) === antes);
@@ -322,7 +324,7 @@ if (!existsSync(exportPath)) {
   // Lo guardado se compara por comportamiento: la posición en el lienzo no cuenta (un nodo se puede mover) y
   // n8n omite los valores por defecto al guardar (resource 'row' y condition 'eq' de la tabla).
   const sinLayout = (n) => {
-    const { position, ...rest } = n;
+    const { position, webhookId, ...rest } = n; // webhookId lo asigna n8n al crear el nodo
     const p = JSON.parse(JSON.stringify(rest.parameters || {}));
     if (p.resource === 'row') delete p.resource;
     for (const c of p.filters?.conditions || []) if (c.condition === 'eq') delete c.condition;
@@ -354,6 +356,14 @@ if (!existsSync(exportPath)) {
     check(g + ' -> Fijar foto y Firmar consumo', next(g).includes('Fijar foto') && next(g).filter((x) => x === 'Firmar consumo').length === 1, next(g).join());
   }
   check('Firmar consumo -> Reportar consumo', next('Firmar consumo').join() === 'Reportar consumo');
+  {
+    const envios = out.nodes.filter((n) => n.type === 'n8n-nodes-base.whatsApp' && ['send', 'sendAndWait'].includes(n.parameters?.operation));
+    const sinConteo = envios.filter((n) => next(n.name).filter((x) => x === 'Firmar consumo').length !== 1).map((n) => n.name);
+    check(`cada envío de WhatsApp (${envios.length}) cuenta un mensaje`, envios.length >= 10 && sinConteo.length === 0, sinConteo.join());
+    const descargas = out.nodes.filter((n) => n.type === 'n8n-nodes-base.whatsApp' && n.parameters?.operation === 'mediaUrlGet');
+    check('las descargas de medios no cuentan', descargas.every((n) => !next(n.name).includes('Firmar consumo')));
+    check('  y siguen yendo a donde iban', next('Enviar foto').includes('Esperar respuesta') && next('Esperar respuesta').includes('Normalizar respuesta'));
+  }
   const rc = node('Reportar consumo');
   check('el reporte no puede romper el flujo', rc?.onError === 'continueRegularOutput' && rc.parameters.options.response.response.neverError === true && rc.parameters.options.timeout === 10000 && !out.connections['Reportar consumo']);
   check('el reporte va a /api/usage/USERx', rc?.parameters.url.includes("/api/usage/' + encodeURIComponent") && !rc.parameters.url.includes('/api/manage/'));
@@ -388,6 +398,59 @@ if (!existsSync(exportPath)) {
     let msg = '';
     try { await run(n, { token: '' }); } catch (e) { msg = e.message; }
     check(n + ' sin token -> se detiene con error claro', msg === 'Este cliente no tiene token en la tabla whatsapp_numeros', msg);
+  }
+
+  // ===== Dominio =====
+  {
+    const { APP_BASE, KNOWN_BASES } = await import('./n8n-patch-flujo.mjs');
+    const txt = JSON.stringify(out.nodes);
+    check('dominio: las URLs del carrusel van a APP_BASE', txt.includes(APP_BASE + '/api/'), APP_BASE);
+    check('dominio: ningún nodo llama a otro dominio del carrusel', KNOWN_BASES.filter((b) => b !== APP_BASE).every((b) => !txt.includes(b)));
+  }
+
+  // ===== Cupo del mes =====
+  {
+    check('Es ayuda (no) -> Hay cupo -> Init contexto | Sin cupo', J(out.connections['Es ayuda'].main[1].map((c) => c.node)) === J(['Hay cupo']) && next('Hay cupo').join() === 'Init contexto' && (out.connections['Hay cupo'].main[1] || []).map((c) => c.node).join() === 'Sin cupo');
+    check('Sin cupo es un envío de WhatsApp y cuenta como mensaje', node('Sin cupo')?.type === 'n8n-nodes-base.whatsApp' && next('Sin cupo').join() === 'Firmar consumo' && node('Sin cupo').credentials?.whatsAppApi?.id);
+    const expr = (s) => s.replace(/^=\{\{\s*/, '').replace(/\s*\}\}$/, '');
+    const hayCupo = (settings) => new Function('$', 'return ' + expr(node('Hay cupo').parameters.conditions.conditions[0].leftValue))((n) => ({ first: () => ({ json: n === 'Traer settings' ? settings : {} }) }));
+    check('Hay cupo: quedan imágenes -> sí', hayCupo({ data: { quota: { used: 3, limit: 30, remaining: 27 } } }) === true);
+    check('Hay cupo: remaining 0 -> no', hayCupo({ data: { quota: { used: 30, limit: 30, remaining: 0 } } }) === false);
+    check('Hay cupo: sin tope (remaining null) -> sí', hayCupo({ data: { quota: { used: 3, limit: null, remaining: null } } }) === true);
+    check('Hay cupo: servidor sin quota -> sí', hayCupo({ data: {} }) === true && hayCupo({}) === true);
+    const aviso = new Function('$', 'return ' + expr(node('Sin cupo').parameters.textBody))((n) => ({ first: () => ({ json: { data: { quota: { limit: 30 } } } }) }));
+    check('Sin cupo: dice el límite', aviso.includes('*30* imágenes') && aviso.includes('\n'), aviso);
+  }
+
+  // ===== Flujo "Generar desde web" (scripts/n8n-flujo-web.mjs) =====
+  {
+    const { buildWebWorkflow, toSdk, KEEP, CALLBACK_PREFIX } = await import('./n8n-flujo-web.mjs');
+    const web = buildWebWorkflow(out);
+    const wn = (n) => web.nodes.find((x) => x.name === n);
+    const wnext = (n, i = 0) => (web.connections[n]?.main?.[i] || []).map((c) => c.node);
+    check('web: ningún nodo depende de uno que no está', web.missing.length === 0, web.missing.join());
+    check('web: 32 nodos, sin WhatsApp ni firma con token', web.nodes.length === KEEP.length + 4 && !web.nodes.some((n) => /whatsApp|dataTable/.test(n.type)) && !JSON.stringify(web.nodes).includes("$('Variables')"));
+    check('web: entra por webhook con X-Carrusel-Key y responde al instante', wn('Pedido web').parameters.authentication === 'headerAuth' && wn('Pedido web').parameters.responseMode === 'onReceived' && wn('Pedido web').credentials.httpHeaderAuth.id);
+    check('web: Pedido web -> Traer settings -> Init contexto', wnext('Pedido web').join() === 'Traer settings' && wnext('Traer settings').join() === 'Init contexto');
+    check('web: sin foto va directo a Qwen; Ref Wan solo a Preparar Wan', wnext('Tiene foto', 1).join() === 'Generar Qwen' && wnext('Ref Wan').join() === 'Preparar Wan');
+    check('web: la imagen final va al panel (con y sin logo)', wnext('Componer logo').join() === 'Enviar al panel' && wnext('Optimizar imagen sin logo').join() === 'Enviar al panel');
+    const env = wn('Enviar al panel').parameters;
+    check('web: Enviar al panel manda la imagen binaria con X-Draft-Token', env.contentType === 'binaryData' && env.inputDataFieldName === 'data' && env.headerParameters.parameters[0].name === 'X-Draft-Token' && env.url.includes('callbackUrl'));
+    check('web: errores del generador y pedidos no entendidos avisan al panel', ['Redactar prompt', 'Generar Qwen', 'Pedir Wan', 'Descargar Wan'].every((n) => wn(n).onError === 'continueErrorOutput' && wnext(n, 1).join() === 'Avisar error') && wnext('Es valido', 1).join() === 'Avisar error');
+    check('web: no reporta consumo (lo cuenta el servidor)', !web.nodes.some((n) => /consumo/i.test(n.name)) && !JSON.stringify(web.connections).includes('Firmar consumo'));
+    check('web: el código del póster es el mismo que en WhatsApp', ['Armar prompt', 'Parsear salida', 'Preparar Wan', 'Calcular posicion'].every((n) => J(wn(n).parameters) === J(node(n).parameters)));
+
+    const runWeb = (name, nodes, input = {}) => new AsyncFunction('$', '$input', node(name) ? 'return (async () => {' + wn(name).parameters.jsCode + '})()' : wn(name).parameters.jsCode)
+      .call({}, (n) => { if (!(n in nodes)) throw new Error('Referenced node does not exist: ' + n); const item = { json: nodes[n] }; return { first: () => item, last: () => item, all: () => [item] }; }, { first: () => ({ json: input }) });
+    const pedidoBody = { prompt: 'Tacos 3x50', changes: ['precio más grande', ' '], callbackUrl: CALLBACK_PREFIX + 'userId=USER2&id=x', callbackToken: 'tok', width: 1080, height: 1920, format: 'vertical', colorPalette: ['#ff0000'], googleDriveFolder: 'https://drive.google.com/drive/folders/abc123' };
+    const ts = (await runWeb('Traer settings', { 'Pedido web': { body: pedidoBody } }))[0].json;
+    check('web: Traer settings junta el pedido y los cambios', ts.texto.startsWith('Tacos 3x50') && ts.texto.includes('1) precio más grande') && !ts.texto.includes('2)') && ts.data.posterWidth === 1080 && ts.data.defaultOrientation === 'vertical', J(ts));
+    let msg = '';
+    try { await runWeb('Traer settings', { 'Pedido web': { body: { ...pedidoBody, callbackUrl: 'https://evil.test/x' } } }); } catch (e) { msg = e.message; }
+    check('web: Traer settings rechaza una callbackUrl ajena', msg === 'callbackUrl no permitida', msg);
+    const ctx = (await runWeb('Init contexto', { 'Traer settings': ts }, ts))[0].json;
+    check('web: Init contexto lee el pedido (texto, tamaño, carpeta, paleta, con logo)', ctx.texto === ts.texto && ctx.ancho === 1080 && ctx.alto === 1920 && ctx.googleDriveFolder === 'abc123' && J(ctx.colorPalette) === J(['#ff0000']) && ctx.lleva_logo === true && ctx.chat === '', J(ctx));
+    check('web: el código para el MCP compila las 31 conexiones', (toSdk(web).match(/\.add\(n\d+\.output/g) || []).length === Object.values(web.connections).flatMap((c) => c.main.flat()).length);
   }
 
   // ===== Formato por resolución, prompt por HTTP y consumo de texto =====

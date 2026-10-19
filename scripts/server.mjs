@@ -63,10 +63,14 @@ const usageHandler = await import('../api/usage.js');
 const accountHandler = await import('../api/account.js');
 const whatsappHandler = await import('../api/whatsapp.js');
 const qrHandler = await import('../api/qr.js');
+const devicesHandler = await import('../api/devices.js');
+const draftsHandler = await import('../api/drafts.js');
 
 // Subidas que reciben el cuerpo como flujo (se escribe a disco, no se junta en memoria).
 const STREAM_UPLOADS = {
   '/api/images-upload': imagesUploadHandler.handleImageUpload,
+  // n8n devuelve la imagen de un borrador (binaria o JSON chico)
+  '/api/drafts/callback': draftsHandler.handleDraftCallback,
 };
 
 const API_ROUTES = {
@@ -89,6 +93,9 @@ const API_ROUTES = {
   '/api/account/reset': accountHandler,
   '/api/whatsapp': whatsappHandler,
   '/api/qr': qrHandler,
+  '/api/devices': devicesHandler,
+  '/api/drafts': draftsHandler,
+  '/api/drafts/callback': { POST: draftsHandler.callbackFromRequest },
 };
 
 // ---- Seed de ejemplo (solo si está vacío y NO en producción) ----
@@ -160,6 +167,8 @@ const MIME = {
 const PUBLIC_FILES = new Set([
   'admin.html',
   'index.html',
+  'terminos.html',
+  'privacidad.html',
   'admin.js',
   'api.js',
   'carousel.js',
@@ -299,6 +308,8 @@ async function serveStatic(req, res, url) {
     file = 'admin.html';
   } else if (pathname.startsWith('/carrusel/')) {
     file = 'index.html';
+  } else if (pathname === '/terminos' || pathname === '/privacidad') {
+    file = `${pathname.slice(1)}.html`;
   } else {
     file = pathname.slice(1);
   }
@@ -326,7 +337,7 @@ async function serveStatic(req, res, url) {
 // ---- Headers de seguridad (todas las respuestas) ----
 const CSP = [
   "default-src 'self'",
-  // Cloudflare inyecta su beacon de Web Analytics en el HTML (zona de carrusel.etziel.com).
+  // Cloudflare inyecta su beacon de Web Analytics en el HTML (zona del dominio del carrusel).
   // Turnstile (captcha del registro) carga su script y su widget en un iframe.
   "script-src 'self' https://static.cloudflareinsights.com https://challenges.cloudflare.com",
   'frame-src https://challenges.cloudflare.com',

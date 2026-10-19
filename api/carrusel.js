@@ -1,8 +1,13 @@
-import { getImages, isVisibleAt, getGenerationSettings, DEFAULT_SLIDE_DURATION, errorResponse, successResponse, checkRateLimit, getClientIp, normalizeUserId } from './_utils.js';
+import {
+  getImages, isVisibleAt, getGenerationSettings, DEFAULT_SLIDE_DURATION, errorResponse, successResponse,
+  checkRateLimit, getClientIp, normalizeUserId, getUsers, getPlanState, isValidDeviceId, touchDevice,
+} from './_utils.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_IMAGES || '60', 10);
 
-// GET /api/carrusel?userId=USER1 - Public carousel endpoint (no auth)
+// GET /api/carrusel?userId=USER1[&device=<uuid>] - Public carousel endpoint (no auth)
+// 402 si la prueba o el plan venció. Con `device`, la pantalla cuenta contra el límite
+// del plan; si ya no cabe responde { deviceBlocked: true } sin imágenes.
 export async function GET(request) {
   const url = new URL(request.url);
   const userId = normalizeUserId(url.searchParams.get('userId'));
@@ -21,6 +26,25 @@ export async function GET(request) {
   }
   
   try {
+    const users = await getUsers();
+    const plan = await getPlanState(userId, users);
+    if (plan.blocked) {
+      return errorResponse('Este carrusel está suspendido', 402, { code: 'PLAN_EXPIRED' });
+    }
+
+    // Sin `device` (pantallas con la versión anterior en caché) se deja pasar: se
+    // recargan solas con la versión nueva y desde ahí ya lo mandan.
+    const device = url.searchParams.get('device');
+    if (device && isValidDeviceId(device) && users[userId]) {
+      const seat = await touchDevice(userId, device, plan.devices);
+      if (seat.revoked) {
+        return successResponse({ images: [], deviceRevoked: true }, 'Device disconnected');
+      }
+      if (!seat.allowed) {
+        return successResponse({ images: [], deviceBlocked: true, limit: seat.limit }, 'Device limit reached');
+      }
+    }
+
     // Solo lo que toca mostrar ahora: ni suspendidas ni fuera de su programación.
     const images = (await getImages(userId)).filter((img) => isVisibleAt(img));
     const settings = await getGenerationSettings(userId);

@@ -10,6 +10,7 @@ import {
   incrWithTtl, setOnce, tempExists, tempDelete,
   hashGetAll, hashSet, hashDel, hashIncrBy,
 } from './_store.js';
+import { planState, resolvePlans, trialFields, PLAN_IDS, PLAN_PROVIDERS } from './_plans.js';
 
 const DEFAULT_IMAGES = [];
 
@@ -23,6 +24,15 @@ function usersKey() {
 
 function filesKey(userId) {
   return `carousel:${userId}:files`;
+}
+
+function devicesKey(userId) {
+  return `carousel:${userId}:devices`;
+}
+
+// Pantallas quitadas desde el panel (id -> ms). Si siguen encendidas no vuelven a entrar.
+function revokedDevicesKey(userId) {
+  return `carousel:${userId}:devices:revoked`;
 }
 
 function usageKey(userId, month) {
@@ -387,7 +397,7 @@ export const updateUserSettings = locked(updateUserSettingsUnlocked);
 
 // Alta de usuario. Recibe `password` (se hashea aquí) o `passwordHash` ya calculado
 // (registro propio: la clave se hashea al registrarse, no al verificar el correo).
-export async function createUser({ name, email, password, passwordHash, createdBy }) {
+export async function createUser({ name, email, password, passwordHash, createdBy, terms }) {
   const cleanName = String(name || '').trim();
   if (!cleanName || cleanName.length > 120) {
     throw new Error('Invalid name');
@@ -424,6 +434,9 @@ export async function createUser({ name, email, password, passwordHash, createdB
       passwordHash,
       createdAt: new Date().toISOString(),
       ...(createdBy ? { createdBy } : {}),
+      // Qué versión de los términos aceptó y cuándo (registro propio).
+      ...(terms && typeof terms.version === 'string' ? { termsVersion: terms.version, termsAcceptedAt: terms.acceptedAt } : {}),
+      ...trialFields(),
     };
     await saveUsers(users);
     return id;
@@ -519,6 +532,8 @@ export async function deleteUser(userId) {
   } catch { /* no fatal */ }
   await delKey(imagesKey(id));
   await delKey(filesKey(id));
+  await delKey(devicesKey(id));
+  await delKey(revokedDevicesKey(id));
   return true;
 }
 
@@ -727,9 +742,14 @@ const defaultStorageMb = () => {
   return n > 0 ? n : 500;
 };
 
-export function storageLimitBytes(user) {
+// Orden: límite propio del usuario -> el de su plan (null = sin tope) -> el del servidor.
+export function storageLimitBytes(user, plans = null) {
   const own = Number(user?.storageLimitMb);
-  return (Number.isInteger(own) && own > 0 ? own : defaultStorageMb()) * MB;
+  if (Number.isInteger(own) && own > 0) return own * MB;
+  const fromPlan = planState(user, plans).storageLimitMb;
+  if (fromPlan === null) return MAX_STORAGE_MB * MB;
+  if (Number.isInteger(fromPlan) && fromPlan > 0) return fromPlan * MB;
+  return defaultStorageMb() * MB;
 }
 
 export async function getStorageUsage(userId, users = null) {
@@ -737,7 +757,7 @@ export async function getStorageUsage(userId, users = null) {
   const all = users || (await getUsers());
   const files = await hashGetAll(filesKey(id));
   const usedBytes = Object.values(files).reduce((sum, n) => sum + n, 0);
-  const limitBytes = storageLimitBytes(all[id]);
+  const limitBytes = storageLimitBytes(all[id], await getPlans());
   return {
     usedBytes,
     limitBytes,
@@ -837,7 +857,7 @@ export async function registerUserFile(userId, fileName, bytes) {
 // ==================== Consumo de generación (lo reporta n8n) ====================
 // Un hash por usuario y mes con contadores. No se consulta a ningún proveedor.
 
-export const USAGE_KINDS = ['image', 'video', 'text'];
+export const USAGE_KINDS = ['image', 'video', 'text', 'message'];
 export const currentMonth = (date = new Date()) => date.toISOString().slice(0, 7); // UTC
 export const isValidMonth = (m) => typeof m === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
 
@@ -874,6 +894,9 @@ export async function recordUsage(userId, { eventId, kind, count, tokens, second
   } else if (kind === 'video') {
     await hashIncrBy(key, 'videos', n);
     if (secs) await hashIncrBy(key, 'videoSeconds', secs);
+  } else if (kind === 'message') {
+    // Mensajes que el bot envió por WhatsApp a este cliente.
+    await hashIncrBy(key, 'whatsappMessages', n);
   }
   if (t.input) await hashIncrBy(key, 'tokensIn', t.input);
   if (t.output) await hashIncrBy(key, 'tokensOut', t.output);
@@ -903,7 +926,10 @@ export async function getGenerationQuota(userId, users = null) {
   const id = sanitizeUserId(userId);
   const all = users || (await getUsers());
   const own = all[id]?.monthlyImageLimit;
-  const limit = Number.isInteger(own) ? own : globalImageLimit(await getConfig());
+  // Orden: tope propio -> el del plan (null = sin tope) -> el global.
+  const cfg = await getConfig();
+  const fromPlan = planState(all[id], resolvePlans(cfg.plans)).monthlyImageLimit;
+  const limit = Number.isInteger(own) ? own : fromPlan !== undefined ? fromPlan : globalImageLimit(cfg);
   const used = (await hashGetAll(usageKey(id, currentMonth()))).images || 0;
   return {
     month: currentMonth(),
@@ -912,6 +938,111 @@ export async function getGenerationQuota(userId, users = null) {
     remaining: limit === null ? null : Math.max(0, limit - used),
     own: Number.isInteger(own) ? own : null,
   };
+}
+
+// ==================== Planes (ver _plans.js) ====================
+
+export async function getPlans() {
+  return resolvePlans((await getConfig()).plans);
+}
+
+export async function getPlanState(userId, users = null) {
+  const all = users || (await getUsers());
+  return planState(all[sanitizeUserId(userId)], await getPlans());
+}
+
+// 402 si la prueba o el plan del usuario venció; null si puede seguir.
+export async function planBlockedResponse(userId, users = null) {
+  const state = await getPlanState(userId, users);
+  if (!state.blocked) return null;
+  return errorResponse('Tu prueba o plan terminó. Contáctanos para activarlo.', 402, { code: 'PLAN_EXPIRED', plan: state });
+}
+
+// Único punto que cambia el plan de un usuario. Lo usa el super-admin (provider 'manual')
+// y lo usará el webhook de Stripe (provider 'stripe', ref = id de la suscripción).
+// `until`: fecha ISO de fin o null (sin fin). Una fecha pasada deja la cuenta vencida.
+async function setPlanUnlocked(userId, { planId, until = null, provider = 'manual', ref = null }) {
+  if (!PLAN_IDS.includes(planId)) {
+    const err = new Error(`Plan inválido. Usa: ${PLAN_IDS.join(', ')}`);
+    err.code = 'INVALID_PLAN';
+    throw err;
+  }
+  if (!PLAN_PROVIDERS.includes(provider)) throw Object.assign(new Error('Proveedor inválido'), { code: 'INVALID_PLAN' });
+  if (until !== null && !Number.isFinite(Date.parse(until))) {
+    throw Object.assign(new Error('Fecha de fin inválida'), { code: 'INVALID_PLAN' });
+  }
+  const users = await getUsers();
+  const id = sanitizeUserId(userId);
+  if (!users[id]) return null;
+  const now = new Date().toISOString();
+  users[id].plan = planId;
+  users[id].planStatus = 'active';
+  users[id].planEndsAt = until === null ? null : new Date(until).toISOString();
+  users[id].billing = { provider, ref: ref ? String(ref).slice(0, 200) : null, updatedAt: now };
+  users[id].updatedAt = now;
+  await saveUsers(users);
+  return { userId: id, ...users[id] };
+}
+
+export const setPlan = locked(setPlanUnlocked);
+
+// ==================== Pantallas (dispositivos) ====================
+// Cada TV/navegador que abre el carrusel manda su id (UUID en su localStorage). Se guarda
+// en el hash carousel:USERx:devices (id -> último visto, ms). Cuenta como activa si se vio
+// en los últimos 30 días; las más viejas se borran solas al llegar una nueva.
+
+export const DEVICE_ACTIVE_MS = 30 * 86400000;
+const DEVICE_TOUCH_MS = 5 * 60000; // no reescribir "último visto" más seguido que esto
+export const isValidDeviceId = (id) => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+export async function listDevices(userId, now = Date.now()) {
+  const all = await hashGetAll(devicesKey(sanitizeUserId(userId)));
+  return Object.entries(all)
+    .map(([id, lastSeen]) => ({ id, lastSeen: new Date(lastSeen).toISOString(), active: now - lastSeen < DEVICE_ACTIVE_MS }))
+    .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
+}
+
+// Anota la pantalla. `limit` null = sin tope. Devuelve { allowed, count, limit, revoked? }.
+// Una pantalla quitada desde el panel recibe `revoked`: la TV ofrece conectarse con un id
+// nuevo, que cuenta como pantalla nueva. Sin esto, una TV encendida volvería a tomar su
+// lugar en la siguiente consulta y no se podría poner otra en su lugar.
+export async function touchDevice(userId, deviceId, limit, now = Date.now()) {
+  const uid = sanitizeUserId(userId);
+  const key = devicesKey(uid);
+  const id = deviceId.toLowerCase();
+  const revoked = await hashGetAll(revokedDevicesKey(uid));
+  if (id in revoked) {
+    if (now - revoked[id] < DEVICE_ACTIVE_MS) return { allowed: false, revoked: true, limit };
+    await hashDel(revokedDevicesKey(uid), id);
+  }
+  const all = await hashGetAll(key);
+  if (id in all) {
+    if (now - all[id] > DEVICE_TOUCH_MS) await hashSet(key, id, now);
+    return { allowed: true, count: Object.keys(all).length, limit };
+  }
+  const stale = Object.keys(all).filter((d) => now - all[d] >= DEVICE_ACTIVE_MS);
+  for (const d of stale) await hashDel(key, d);
+  const count = Object.keys(all).length - stale.length;
+  if (limit !== null && count >= limit) return { allowed: false, count, limit };
+  await hashSet(key, id, now);
+  return { allowed: true, count: count + 1, limit };
+}
+
+// Quita una pantalla (o todas con deviceId null) y la deja desconectada. Devuelve cuántas.
+export async function removeDevice(userId, deviceId, now = Date.now()) {
+  const uid = sanitizeUserId(userId);
+  const key = devicesKey(uid);
+  const all = await hashGetAll(key);
+  const ids = deviceId === null ? Object.keys(all) : [String(deviceId).toLowerCase()].filter((id) => id in all);
+  const revokedKey = revokedDevicesKey(uid);
+  // Las desconexiones de más de 30 días ya no hacen falta: esa pantalla dejaría de contar igual.
+  const revoked = await hashGetAll(revokedKey);
+  for (const [id, at] of Object.entries(revoked)) if (now - at >= DEVICE_ACTIVE_MS) await hashDel(revokedKey, id);
+  for (const id of ids) {
+    await hashSet(revokedKey, id, now);
+    await hashDel(key, id);
+  }
+  return ids.length;
 }
 
 export async function getUsageSummary(userId, month = currentMonth()) {
@@ -924,6 +1055,7 @@ export async function getUsageSummary(userId, month = currentMonth()) {
     imagesNoTokens,
     videos: data.videos || 0,
     videoSeconds: data.videoSeconds || 0,
+    whatsappMessages: data.whatsappMessages || 0,
     tokensIn: data.tokensIn || 0,
     tokensOut: data.tokensOut || 0,
     tokensTotal: data.tokensTotal || 0,

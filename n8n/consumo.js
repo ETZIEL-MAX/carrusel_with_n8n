@@ -4,6 +4,9 @@
 //  - "Redactar prompt" o "Transcribir audio": una respuesta de chat de OpenRouter
 //    ({ model, choices, usage }): tokens de texto.
 //  - "JEV": la respuesta del clasificador ({ model, answers, usage }): tokens de texto.
+//  - Un nodo de WhatsApp que envia: un mensaje del bot al cliente. "send" devuelve la respuesta
+//    de Meta ({ messaging_product: 'whatsapp', messages: [{ id }] }); "sendAndWait" devuelve la
+//    respuesta del cliente ({ data: { approved } }), que tambien fue un mensaje enviado.
 // Un evento por llamada: el eventId evita contarla dos veces. Devuelve null si no hay nada
 // que reportar (un texto sin tokens).
 function armarConsumo(gen, executionId, runIndex) {
@@ -11,6 +14,13 @@ function armarConsumo(gen, executionId, runIndex) {
   // Un nodo HTTP en continueRegularOutput (la transcripcion) deja { error } si falla:
   // no hubo consumo que reportar.
   if (g.error) { return null; }
+  if (g.messaging_product === 'whatsapp' && Array.isArray(g.messages)) {
+    var id = g.messages[0] && g.messages[0].id;
+    return { eventId: String(executionId) + '-msg-' + (id ? String(id) : String(runIndex)), kind: 'message', count: 1 };
+  }
+  if (g.data && typeof g.data === 'object' && typeof g.data.approved === 'boolean') {
+    return { eventId: String(executionId) + '-msg-' + String(runIndex), kind: 'message', count: 1 };
+  }
   if (Array.isArray(g.choices)) { return armarConsumoTexto(g, executionId, runIndex, 'txt'); }
   if (g.answers && typeof g.answers === 'object') { return armarConsumoTexto(g, executionId, runIndex, 'jev'); }
   var out = {

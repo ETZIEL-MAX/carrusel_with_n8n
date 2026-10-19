@@ -110,6 +110,37 @@ const API = (() => {
         method: 'PATCH',
         body: JSON.stringify({ name, email, storageLimitMb, monthlyImageLimit }),
       }),
+    // Plan del usuario (super-admin). planEndsAt: fecha ISO o null = sin fin.
+    setUserPlan: (userId, plan, planEndsAt) =>
+      request(`/api/users?userId=${encodeURIComponent(userId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ plan, planEndsAt }),
+      }),
+    // Pantallas que reproducen el carrusel
+    getDevices: (userId) => request(userId ? withUserId('/api/devices', userId) : '/api/devices'),
+    removeDevice: (userId, id) => {
+      const params = new URLSearchParams({ id });
+      if (userId) params.set('userId', userId);
+      return request(`/api/devices?${params}`, { method: 'DELETE' });
+    },
+    removeAllDevices: (userId) => {
+      const params = new URLSearchParams({ all: '1' });
+      if (userId) params.set('userId', userId);
+      return request(`/api/devices?${params}`, { method: 'DELETE' });
+    },
+    // Borradores de "Crear con IA"
+    getDrafts: (userId) => request(userId ? withUserId('/api/drafts', userId) : '/api/drafts'),
+    createDraft: (userId, prompt) =>
+      request(userId ? withUserId('/api/drafts', userId) : '/api/drafts', { method: 'POST', body: JSON.stringify({ prompt }) }),
+    changeDraft: (userId, id, cambios) =>
+      request(userId ? withUserId('/api/drafts', userId) : '/api/drafts', { method: 'PATCH', body: JSON.stringify({ id, cambios }) }),
+    publishDraft: (userId, id) =>
+      request(userId ? withUserId('/api/drafts', userId) : '/api/drafts', { method: 'POST', body: JSON.stringify({ id, action: 'publicar' }) }),
+    discardDraft: (userId, id) => {
+      const params = new URLSearchParams({ id });
+      if (userId) params.set('userId', userId);
+      return request(`/api/drafts?${params}`, { method: 'DELETE' });
+    },
     // Genera o regenera el token de webhook. La respuesta es la única vez que se ve.
     generateToken: (userId) =>
       request(`/api/users/token?userId=${encodeURIComponent(userId)}`, { method: 'POST' }),

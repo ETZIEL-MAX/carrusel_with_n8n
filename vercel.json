@@ -32,6 +32,8 @@
     { "source": "/", "destination": "/admin.html" },
     { "source": "/admin", "destination": "/admin.html" },
     { "source": "/admin/", "destination": "/admin.html" },
+    { "source": "/terminos", "destination": "/terminos.html" },
+    { "source": "/privacidad", "destination": "/privacidad.html" },
     { "source": "/carrusel/:userId", "destination": "/index.html" },
     { "source": "/carrusel/:userId/", "destination": "/index.html" }
   ]

@@ -10,7 +10,7 @@ umask 077
   printf "N8N_NUMBERS_SECRET=%s\n" "$(openssl rand -hex 32)"
   # Registro propio: completar a mano RESEND_API_KEY, MAIL_FROM, TURNSTILE_SITE_KEY,
   # TURNSTILE_SECRET_KEY, N8N_NUMBERS_WEBHOOK_URL y N8N_ALLOWED_HOSTS (ver .env.example).
-  printf "UPLOAD_ALLOWED_HOSTS=%s\n" "carrusel.etziel.com,aliyuncs.com,cloudinary.com,res.cloudinary.com,pollinations.ai,image.pollinations.ai"
+  printf "UPLOAD_ALLOWED_HOSTS=%s\n" "eninternet.tv,carrusel.etziel.com,aliyuncs.com,cloudinary.com,res.cloudinary.com,pollinations.ai,image.pollinations.ai"
 } > .env.prod
 ls -la .env.prod
 cut -c1-45 .env.prod | sed -E 's/(SECRET=).*/\1<oculto>/'

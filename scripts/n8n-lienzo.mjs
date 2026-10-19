@@ -37,6 +37,7 @@ export const SECCIONES = [
     nodos: {
       'Hay texto': [19, 0], JEV: [20, 0], 'Detectar ruta': [21, 0], 'Es spam': [22, 0],
       'Mensaje ignorado': [23, -1], 'Es foto': [23, 0], 'Es comando': [24, 0], 'Es ayuda': [25, 0], 'Enviar ayuda': [26, -1],
+      'Hay cupo': [26, 0], 'Sin cupo': [27, -1],
     },
   },
   {

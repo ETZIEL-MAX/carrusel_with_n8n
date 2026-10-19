@@ -3,7 +3,7 @@ import {
   jsonResponse, errorResponse, successResponse,
   verifyUserLogin, getUsers, getClientIp, sameOrigin,
   startSession, getSession, endSession, endAllSessions,
-  isLoginLocked, noteLoginFailure, clearLoginFailures,
+  isLoginLocked, noteLoginFailure, clearLoginFailures, getPlanState,
 } from './_utils.js';
 import { verify } from '@node-rs/argon2';
 import { accountOptions } from './account.js';
@@ -128,6 +128,7 @@ export async function GET(request) {
         return jsonResponse({
           authenticated: true, role: 'user', userId: payload.userId,
           name: data.name, email: data.email,
+          plan: await getPlanState(payload.userId, users),
         });
       }
     } catch { /* fall through */ }

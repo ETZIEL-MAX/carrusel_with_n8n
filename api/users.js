@@ -2,9 +2,11 @@ import {
   getUsers, getImages, createUser, updateUser, updateUserPassword, deleteUser,
   requireSession, checkRateLimit, getClientIp, normalizeUserId,
   getStorageUsage, getGenerationQuota, generateClientToken, newClientToken, isValidNewPassword, PASSWORD_ERROR,
+  getPlans, getUsageSummary, listDevices, setPlan,
   errorResponse, successResponse,
 } from './_utils.js';
 import { numbersConfigured, pushNumber } from './_n8n-numbers.js';
+import { planState } from './_plans.js';
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_AUTH || '5', 10);
 
@@ -17,6 +19,7 @@ export async function GET(request) {
   if (auth instanceof Response) return auth;
 
   const users = await getUsers();
+  const plans = await getPlans();
   const list = await Promise.all(
     Object.entries(users).map(async ([userId, data]) => {
       let images = [];
@@ -33,6 +36,8 @@ export async function GET(request) {
         storage = null;
       }
       const quota = await getGenerationQuota(userId, users).catch(() => null);
+      const usage = await getUsageSummary(userId).catch(() => null);
+      const devices = await listDevices(userId).catch(() => []);
       return {
         userId,
         name: data.name || userId,
@@ -40,6 +45,9 @@ export async function GET(request) {
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
         createdBy: data.createdBy || 'admin',
+        // Prueba de que aceptó los términos al registrarse (null si la creó el super-admin).
+        termsVersion: data.termsVersion || null,
+        termsAcceptedAt: data.termsAcceptedAt || null,
         imageCount: sorted.length,
         preview: sorted.slice(0, 3).map((i) => i.url),
         usedBytes: storage?.usedBytes ?? 0,
@@ -52,6 +60,10 @@ export async function GET(request) {
         tokenCreatedAt: data.webhookTokenCreatedAt || null,
         whatsappPhone: data.whatsappPhone || null,
         quota,
+        plan: planState(data, plans),
+        devicesActive: devices.filter((d) => d.active).length,
+        // Del mes en curso: lo que más interesa en la lista del super-admin.
+        usage: usage ? { month: usage.month, images: usage.images, whatsappMessages: usage.whatsappMessages } : null,
       };
     })
   );
@@ -167,13 +179,19 @@ export async function PATCH(request) {
     return successResponse({ userId, password }, 'Password updated');
   }
 
-  const { name, email, storageLimitMb, monthlyImageLimit } = body || {};
-  if (name === undefined && email === undefined && storageLimitMb === undefined && monthlyImageLimit === undefined) {
+  // plan: 'basico'|'pro'|'empresa'|'custom'; planEndsAt: fecha ISO o null (sin fin).
+  const { name, email, storageLimitMb, monthlyImageLimit, plan, planEndsAt } = body || {};
+  if (name === undefined && email === undefined && storageLimitMb === undefined && monthlyImageLimit === undefined && plan === undefined) {
     return errorResponse('Nothing to update', 400);
   }
 
   try {
-    const updated = await updateUser(userId, { name, email, storageLimitMb, monthlyImageLimit });
+    if (plan !== undefined) {
+      const changed = await setPlan(userId, { planId: plan, until: planEndsAt ?? null, provider: 'manual' });
+      if (!changed) return errorResponse('User not found', 404);
+    }
+    const onlyPlan = name === undefined && email === undefined && storageLimitMb === undefined && monthlyImageLimit === undefined;
+    const updated = onlyPlan ? { userId, ...(await getUsers())[userId] } : await updateUser(userId, { name, email, storageLimitMb, monthlyImageLimit });
     if (!updated) {
       return errorResponse('User not found', 404);
     }
@@ -182,11 +200,12 @@ export async function PATCH(request) {
         userId, name: updated.name, email: updated.email, updatedAt: updated.updatedAt,
         storageLimitMb: updated.storageLimitMb ?? null,
         monthlyImageLimit: updated.monthlyImageLimit ?? null,
+        plan: planState(updated, await getPlans()),
       },
       'User updated'
     );
   } catch (err) {
-    if (err.code === 'INVALID_LIMIT') return errorResponse(err.message, 400);
+    if (err.code === 'INVALID_LIMIT' || err.code === 'INVALID_PLAN') return errorResponse(err.message, 400);
     if (err.code === 'EMAIL_TAKEN') return errorResponse('Email already in use', 409);
     if (err.code === 'INVALID_EMAIL') return errorResponse('Invalid email', 400);
     if (err.code === 'INVALID_NAME') return errorResponse('Invalid name', 400);

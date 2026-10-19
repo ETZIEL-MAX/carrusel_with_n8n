@@ -55,7 +55,7 @@ const n8nServer = createServer((req, res) => {
   req.on('data', (c) => { raw += c; });
   req.on('end', () => {
     const body = JSON.parse(raw || '{}');
-    n8nCalls.push({ key: req.headers['x-carrusel-key'], body });
+    n8nCalls.push({ key: req.headers['x-carrusel-key'], body, path: req.url });
     if (n8nTaken.has(body.numero)) return res.writeHead(409).end('{"error":"otro carrusel"}');
     res.writeHead(n8nFail ? 500 : 200, { 'content-type': 'application/json' }).end('{"ok":true}');
   });
@@ -79,6 +79,8 @@ const child = spawn(process.execPath, ['scripts/server.mjs'], {
     TOKEN_ENC_KEY: 'test-token-enc-key-0123456789abcdef0123',
     N8N_NUMBERS_WEBHOOK_URL: `http://127.0.0.1:${N8N_PORT}/alta`,
     N8N_NUMBERS_SECRET: N8N_KEY,
+    N8N_WEB_GENERATION_URL: `http://127.0.0.1:${N8N_PORT}/web`,
+    N8N_ALLOWED_HOSTS: '127.0.0.1',
     RATE_LIMIT_AUTH: '100',
     MANUAL_UPLOAD_MAX_BYTES: String(700 * 1024),
     UPLOAD_MAX_BYTES: String(900 * 1024),
@@ -1256,10 +1258,11 @@ async function runTests() {
   {
     let ipN = 0;
     const ip = () => `10.88.${Math.floor(++ipN / 250)}.${ipN % 250}`;
+    // El registro acepta los términos salvo que la prueba diga lo contrario.
     const account = (action, payload, from = ip()) => fetch(BASE + '/api/account/' + action, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-forwarded-for': from },
-      body: J(payload),
+      body: J(action === 'register' ? { acceptTerms: true, ...payload } : payload),
     });
     const mailDir = join(dataDir, 'mail');
     const mailsTo = async (to) => {
@@ -1293,6 +1296,8 @@ async function runTests() {
     check('registro con clave corta -> 400', r.status === 400, r.status);
     r = await account('register', { name: '', email: 'ana@example.com', password: 'clave-larga-123' });
     check('registro sin nombre -> 400', r.status === 400, r.status);
+    r = await account('register', { name: 'Ana', email: 'ana@example.com', password: 'clave-larga-123', acceptTerms: false });
+    check('registro sin aceptar los términos -> 400 TERMS_REQUIRED', r.status === 400 && (await r.json()).details?.code === 'TERMS_REQUIRED', r.status);
 
     r = await account('register', { name: 'Ana Pruebas', email: 'Ana@Example.com', password: 'clave-larga-123' });
     const regMsg = (await r.json()).message;
@@ -1319,6 +1324,7 @@ async function runTests() {
     r = await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } });
     const anaRow = (await r.json()).data.users.find((u) => u.userId === anaId);
     check('  el super-admin la ve como registro propio', anaRow?.createdBy === 'self', J(anaRow?.createdBy));
+    check('  queda guardado qué términos aceptó y cuándo', anaRow?.termsVersion === '2026-10-18' && !Number.isNaN(Date.parse(anaRow?.termsAcceptedAt)), J(anaRow));
 
     r = await account('register', { name: 'Ana', email: 'ana@example.com', password: 'otra-clave-123' });
     check('re-registro con el mismo correo responde igual', r.status === 200 && (await r.json()).message === regMsg, r.status);
@@ -1537,13 +1543,178 @@ async function runTests() {
     check('  el propio (2) manda sobre el global (1)', q?.limit === 2, J(q));
     r = await adminJson(`/api/users?userId=${qId}`, 'PATCH', { monthlyImageLimit: null });
     q = await quotaOf();
-    check('  sin propio usa el global', q?.limit === 1 && q?.remaining === 0 && q?.own === null, J(q));
+    check('  sin propio usa el de su plan (Básico: 30)', q?.limit === 30 && q?.remaining === 28 && q?.own === null, J(q));
+    // Una cuenta anterior a los planes (USER1, sin `plan`) usa el global.
+    const legacyQuota = async () => (await (await fetch(BASE + '/api/usage?userId=USER1', { headers: { cookie: adminCookie } })).json()).data?.quota;
+    q = await legacyQuota();
+    check('  cuenta sin plan usa el global', q?.limit === 1 && q?.own === null, J(q));
     r = await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: null });
-    q = await quotaOf();
+    q = await legacyQuota();
     check('  global null = sin tope', q?.limit === null && q?.remaining === null, J(q));
     r = await fetch(BASE + '/api/usage', { headers: { cookie: adminCookie } });
     check('  GET config muestra el tope global', (await r.json()).data?.monthlyImageLimit === null, r.status);
     await adminJson('/api/usage', 'PATCH', { monthlyImageLimit: 50 });
+  }
+
+  console.log('\n== Planes y prueba gratis ==');
+  {
+    await adminJson('/api/users', 'POST', { name: 'Plan', email: 'plan-p@example.com', password: 'clave-larga-123' });
+    const listUsers = async () => (await (await fetch(BASE + '/api/users', { headers: { cookie: adminCookie } })).json()).data.users;
+    const pu = (await listUsers()).find((u) => u.email === 'plan-p@example.com');
+    const pId = pu.userId;
+    check('cuenta nueva: prueba de 7 días del Básico', pu.plan?.status === 'trial' && pu.plan?.planId === 'basico' && pu.plan?.daysLeft === 7 && pu.plan?.devices === 3, J(pu.plan));
+    check('cuenta anterior (USER1) queda sin plan', (await listUsers()).find((u) => u.userId === 'USER1')?.plan?.status === 'legacy');
+    const pToken = (await (await adminJson(`/api/users/token?userId=${pId}`, 'POST', {})).json()).data.token;
+    const carrusel = (id, device) => fetch(`${BASE}/api/carrusel?userId=${id}${device ? `&device=${device}` : ''}`, { headers: { 'x-forwarded-for': ip() } });
+
+    r = await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'oro' });
+    check('plan desconocido -> 400', r.status === 400, r.status);
+    r = await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'pro', planEndsAt: '2020-01-01T00:00:00Z' });
+    check('plan con fecha pasada -> vencido', r.status === 200 && (await r.json()).data?.plan?.status === 'expired', r.status);
+    r = await carrusel(pId);
+    check('  carrusel vencido -> 402', r.status === 402, r.status);
+    let c = await clientPost(`/api/webhook/${pId}`, pToken, { images: [{ url: 'https://x.test/vencido.jpg' }] });
+    check('  webhook de n8n vencido -> 402', c.status === 402 && c.json.details?.code === 'PLAN_EXPIRED', c.status);
+    c = await clientPost(`/api/settings-read/${pId}`, pToken, { n: 1 });
+    check('  settings-read vencido -> 402', c.status === 402, c.status);
+    r = await adminJson(`/api/images?userId=${pId}`, 'POST', { url: 'https://x.test/a.jpg' });
+    check('  alta desde el panel vencida -> 402', r.status === 402, r.status);
+    r = await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'pro', planEndsAt: null });
+    check('activar Pro sin fin', r.status === 200 && (await r.json()).data?.plan?.status === 'active', r.status);
+    r = await carrusel(pId);
+    check('  carrusel activo otra vez -> 200', r.status === 200, r.status);
+
+    r = await adminJson('/api/usage', 'PATCH', { plans: { basico: { devices: 0 } } });
+    check('config: pantallas 0 -> 400', r.status === 400, r.status);
+    r = await adminJson('/api/usage', 'PATCH', { plans: { oro: { devices: 3 } } });
+    check('config: plan desconocido -> 400', r.status === 400, r.status);
+    r = await adminJson('/api/usage', 'PATCH', { plans: { basico: { devices: 2, priceMxn: 199 } } });
+    const cfgPlans = (await r.json()).data?.plans;
+    check('config: cambia el Básico', r.status === 200 && cfgPlans?.basico?.devices === 2 && cfgPlans?.basico?.priceMxn === 199 && cfgPlans?.basico?.monthlyImageLimit === 30 && cfgPlans?.pro?.devices === 10, J(cfgPlans?.basico));
+
+    console.log('\n== Pantallas ==');
+    await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'basico', planEndsAt: null }); // 2 pantallas
+    const dev = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const seat = async (id, n) => (await (await carrusel(id, typeof n === 'number' ? dev(n) : n)).json()).data;
+    check('pantalla 1 entra', (await seat(pId, 1))?.deviceBlocked !== true);
+    check('pantalla 2 entra', (await seat(pId, 2))?.deviceBlocked !== true);
+    let d = await seat(pId, 3);
+    check('pantalla 3 -> límite alcanzado', d?.deviceBlocked === true && d?.limit === 2 && d?.images?.length === 0, J(d));
+    check('pantalla 1 sigue entrando', (await seat(pId, 1))?.deviceBlocked !== true);
+    check('id de pantalla inválido se ignora', (await seat(pId, 'x'))?.deviceBlocked !== true);
+    r = await fetch(`${BASE}/api/devices?userId=${pId}`, { headers: { cookie: adminCookie, 'x-forwarded-for': ip() } });
+    d = (await r.json()).data;
+    check('GET devices: 2 de 2', r.status === 200 && d?.active === 2 && d?.limit === 2 && d?.devices?.length === 2, J(d));
+    r = await adminJson(`/api/devices?userId=${pId}&id=nope`, 'DELETE');
+    check('DELETE id inválido -> 400', r.status === 400, r.status);
+    r = await adminJson(`/api/devices?userId=${pId}&id=${dev(2)}`, 'DELETE');
+    check('liberar pantalla 2', r.status === 200, r.status);
+    check('  ahora entra la 3', (await seat(pId, 3))?.deviceBlocked !== true);
+    d = await seat(pId, 2);
+    check('  la 2 quitada sigue encendida -> desconectada, no vuelve a entrar', d?.deviceRevoked === true && d?.images?.length === 0, J(d));
+    r = await fetch(`${BASE}/api/devices?userId=${pId}`, { headers: { cookie: adminCookie, 'x-forwarded-for': ip() } });
+    check('  la 2 no ocupa lugar', (await r.json()).data?.active === 2);
+    r = await adminJson(`/api/devices?userId=${pId}&all=1`, 'DELETE');
+    const all = await r.json();
+    check('liberar todas', r.status === 200 && all?.data?.removed === 2, J(all));
+    check('  la 1 queda desconectada', (await seat(pId, 1))?.deviceRevoked === true);
+    check('  con id nuevo entra (conectar como pantalla nueva)', (await seat(pId, 4))?.deviceBlocked !== true && (await seat(pId, 5))?.deviceBlocked !== true);
+    check('  y la siguiente ya no cabe', (await seat(pId, 6))?.deviceBlocked === true);
+    await adminJson(`/api/devices?userId=${pId}&all=1`, 'DELETE');
+    let legacyOk = true;
+    for (let n = 10; n < 16; n++) legacyOk = legacyOk && (await seat('USER1', n))?.deviceBlocked !== true;
+    check('cuenta sin plan: sin límite de pantallas', legacyOk);
+    r = await fetch(`${BASE}/api/devices`, { headers: { 'x-forwarded-for': ip() } });
+    check('devices sin sesión -> 401', r.status === 401, r.status);
+
+    console.log('\n== Mensajes de WhatsApp ==');
+    c = await clientPost(`/api/usage/${pId}`, pToken, { eventId: 'msg-1', kind: 'message', count: 1 });
+    check('evento message', c.status === 200, c.status);
+    await clientPost(`/api/usage/${pId}`, pToken, { eventId: 'msg-1', kind: 'message', count: 1 });
+    await clientPost(`/api/usage/${pId}`, pToken, { eventId: 'msg-2', kind: 'message', count: 1 });
+    const mu = (await listUsers()).find((u) => u.userId === pId);
+    check('  la lista del super-admin cuenta 2 (sin duplicar)', mu?.usage?.whatsappMessages === 2 && mu?.usage?.images === 0, J(mu?.usage));
+    await adminJson('/api/usage', 'PATCH', { plans: { basico: { devices: 3, priceMxn: 299 } } });
+
+    console.log('\n== Crear con IA (borradores) ==');
+    const drafts = async () => (await (await fetch(`${BASE}/api/drafts?userId=${pId}`, { headers: { cookie: adminCookie, 'x-forwarded-for': ip() } })).json()).data;
+    const lastWeb = () => n8nCalls.filter((x) => x.path === '/web').at(-1);
+    const callback = (call, { token = call.body.callbackToken, body = PNG, type = 'image/png' } = {}) =>
+      fetch(call.body.callbackUrl, { method: 'POST', headers: { 'content-type': type, 'x-draft-token': token, 'x-forwarded-for': ip() }, body });
+    const usageNow = async () => (await (await fetch(`${BASE}/api/usage?userId=${pId}`, { headers: { cookie: adminCookie } })).json()).data;
+
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: '  ' });
+    check('borrador sin texto -> 400', r.status === 400, r.status);
+    const before = (await usageNow()).usage.images;
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: 'Tacos 3x50 hoy' });
+    let dr = (await r.json()).data;
+    let call = lastWeb();
+    check('crear borrador -> generando', r.status === 200 && dr?.status === 'generando' && dr?.round === 1, r.status + ' ' + J(dr));
+    check('  n8n recibe el pedido', call?.body?.draftId === dr?.id && call.body.prompt === 'Tacos 3x50 hoy' && call.body.width > 0 && call.key === N8N_KEY && /\/api\/drafts\/callback\?userId=USER\d+&id=/.test(call.body.callbackUrl) && call.body.callbackToken?.length > 20, J(call?.body));
+    check('  el secreto no se ve en la lista', !J(await drafts()).includes(call.body.callbackToken));
+    r = await callback(call, { token: 'otro' });
+    check('  callback con secreto equivocado -> 401', r.status === 401, r.status);
+    r = await callback(call);
+    check('  callback con la imagen -> 200', r.status === 200, r.status + ' ' + await r.clone().text());
+    let ds = await drafts();
+    check('  el borrador queda listo con su imagen', ds.drafts[0]?.status === 'listo' && /^\/uploads\/USER\d+-/.test(ds.drafts[0]?.url || ''), J(ds.drafts[0]));
+    check('  la imagen cuenta en el consumo del mes', (await usageNow()).usage.images === before + 1);
+    r = await callback(call);
+    check('  el mismo secreto no sirve dos veces', r.status === 401, r.status);
+    const firstUrl = ds.drafts[0].url;
+
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'PATCH', { id: dr.id, cambios: 'más grande el precio' });
+    dr = (await r.json()).data;
+    call = lastWeb();
+    check('pedir cambios -> ronda 2', r.status === 200 && dr?.status === 'generando' && dr?.round === 2, J(dr));
+    check('  n8n recibe los cambios y la imagen anterior', J(call.body.changes) === J(['más grande el precio']) && call.body.previousImageUrl === BASE + firstUrl, J(call.body));
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { id: dr.id, action: 'publicar' });
+    check('  no se publica mientras se genera -> 409', r.status === 409, r.status);
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'PATCH', { id: dr.id, cambios: 'otra' });
+    check('  ni se piden más cambios -> 409', r.status === 409, r.status);
+    r = await callback(call, { body: J({ error: 'el generador falló' }), type: 'application/json' });
+    ds = await drafts();
+    check('  n8n avisa un error: queda en error con la imagen anterior', r.status === 200 && ds.drafts[0]?.status === 'error' && ds.drafts[0]?.url === firstUrl && ds.drafts[0]?.error === 'el generador falló', J(ds.drafts[0]));
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'PATCH', { id: dr.id, cambios: 'fondo azul' });
+    call = lastWeb();
+    r = await callback(call);
+    ds = await drafts();
+    const secondUrl = ds.drafts[0]?.url;
+    check('  la ronda 3 reemplaza la imagen', ds.drafts[0]?.status === 'listo' && secondUrl && secondUrl !== firstUrl, J(ds.drafts[0]));
+    r = await fetch(BASE + firstUrl);
+    check('  y borra el archivo anterior', r.status === 404, r.status);
+
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { id: dr.id, action: 'publicar' });
+    check('publicar -> 200', r.status === 200 && (await r.json()).data?.url === secondUrl, r.status);
+    r = await carrusel(pId);
+    check('  la imagen está en el carrusel', (await r.json()).data.images.some((i) => i.url === secondUrl));
+    check('  y sale de los borradores', (await drafts()).drafts.length === 0);
+    r = await fetch(BASE + secondUrl);
+    check('  el archivo sigue ahí', r.status === 200, r.status);
+
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: 'Para descartar' });
+    dr = (await r.json()).data;
+    await callback(lastWeb());
+    const files = (await usageNow()).storage.fileCount;
+    const discardUrl = (await drafts()).drafts[0].url;
+    r = await adminJson(`/api/drafts?userId=${pId}&id=${dr.id}`, 'DELETE');
+    check('descartar -> 200 y libera el archivo', r.status === 200 && (await usageNow()).storage.fileCount === files - 1 && (await fetch(BASE + discardUrl)).status === 404, r.status);
+
+    n8nFail = true;
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: 'n8n caído' });
+    n8nFail = false;
+    check('n8n caído -> 502 y no queda borrador', r.status === 502 && (await drafts()).drafts.length === 0, r.status);
+
+    r = await adminJson(`/api/users?userId=${pId}`, 'PATCH', { monthlyImageLimit: 0 });
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: 'sin cupo' });
+    check('sin cupo del mes -> 429', r.status === 429, r.status);
+    await adminJson(`/api/users?userId=${pId}`, 'PATCH', { monthlyImageLimit: null });
+    await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'basico', planEndsAt: '2020-01-01T00:00:00Z' });
+    r = await adminJson(`/api/drafts?userId=${pId}`, 'POST', { prompt: 'vencido' });
+    check('plan vencido -> 402', r.status === 402, r.status);
+    await adminJson(`/api/users?userId=${pId}`, 'PATCH', { plan: 'basico', planEndsAt: null });
+    r = await fetch(`${BASE}/api/drafts`, { headers: { 'x-forwarded-for': ip() } });
+    check('drafts sin sesión -> 401', r.status === 401, r.status);
   }
 
   console.log('\n== Health ==');

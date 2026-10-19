@@ -7,7 +7,7 @@ import {
   addImage, getUsers, requireSession, resolveUserId, checkRateLimit, getClientIp,
   assertFits, saveImageFromTemp, quotaErrorResponse,
   errorResponse, successResponse,
-  isUser,
+  isUser, planBlockedResponse,
 } from './_utils.js';
 import { writeCapped, withUploadSlot, sweepStaleTemps, cleanupTemp } from './_stream.js';
 
@@ -41,6 +41,8 @@ async function resolveTarget(request) {
 export async function handleImageUpload(request, stream) {
   const userId = await resolveTarget(request);
   if (userId instanceof Response) return userId;
+  const blocked = await planBlockedResponse(userId);
+  if (blocked) return blocked;
 
   const rateLimit = checkRateLimit(`manual-upload:${getClientIp(request)}:${userId}`, RATE_LIMIT);
   if (!rateLimit.allowed) {

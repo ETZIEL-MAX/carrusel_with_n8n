@@ -100,6 +100,8 @@ argon2 hash) in the temp key `carousel:signup:<sha256(token)>` for 24 h and mail
 which creates the user (`createdBy: 'self'`) and opens a session. `forgot` stores
 `carousel:reset:<sha256(token)>` = `USERn:<fingerprint of the current hash>` for 30 min; `reset`
 takes it once (`tempTake`, GETDEL) and refuses it if the password changed meanwhile.
+`register` requires `acceptTerms: true` (400 `TERMS_REQUIRED`) and stores `termsVersion` (`TERMS_VERSION` in
+`account.js`, bump it when `terminos.html` or `privacidad.html` change) and `termsAcceptedAt` on the user.
 `register` and `forgot` always answer the same, whether the address exists or not. Mail goes
 through Resend (`_mail.js`; without `RESEND_API_KEY` outside production it is written to
 `LOCAL_DATA_DIR/mail/`), the captcha is Cloudflare Turnstile (`_turnstile.js`; skipped outside
@@ -122,6 +124,36 @@ update n8n. A number belongs to one account at most.
 letterbox with a blurred copy; default off = black). `isVisibleAt` in `_utils.js` is the single
 rule; `GET /api/carrusel` filters with it in `CAROUSEL_TIMEZONE` (default `America/Monterrey`),
 while the panel's `GET /api/images` returns everything plus `visibleNow`.
+
+**Plans and free trial** (`api/_plans.js`, the single rule is `planState`). Every new account
+(self sign-up or super-admin) gets `plan: 'basico', planStatus: 'trial', trialEndsAt: +7 days`. Plans
+`basico`/`pro`/`empresa`/`custom` set `devices`, `monthlyImageLimit`, `storageLimitMb` and `priceMxn`;
+defaults live in `DEFAULT_PLANS`, the super-admin edits them in `carousel:config.plans`. Limits resolve
+own field → plan → global. Users without `plan` are `legacy` (no screen limit, never blocked). An
+expired trial/plan blocks everything: `planBlockedResponse` (402 `PLAN_EXPIRED`) runs in `/api/carrusel`,
+panel uploads, `POST /api/images`, `/api/drafts` and every HMAC route (`authorizeClient`). Change a plan
+only through `setPlan` (`_utils.js`): the super-admin uses `provider: 'manual'`; a future Stripe webhook
+calls the same function with `provider: 'stripe'`.
+
+**Screens (devices).** `carousel.js` keeps a UUID in `localStorage` (`carrusel:device`) and polls
+`/api/carrusel?userId=&device=`. `touchDevice` records it in the hash `carousel:USERx:devices`
+(id → last seen ms); a screen counts if seen in the last 30 days. Over the plan's `devices` the
+response is `{ deviceBlocked: true }` and the TV shows a notice. `api/devices.js` lists and frees them
+(`?id=` or `?all=1`). A freed screen is also revoked (hash `carousel:USERx:devices:revoked`, 30 days), so a
+TV that is still on cannot take its seat back: it gets `{ deviceRevoked: true }` and shows a "Conectar como
+pantalla nueva" button, which makes a new UUID that counts as a new screen.
+
+**Create with AI (drafts)** (`api/_drafts.js`, `api/drafts.js`). The panel creates a draft in
+`carousel:USERx:drafts` and POSTs to n8n (`N8N_WEB_GENERATION_URL`, or the carousel's
+`n8nGenerationWebhook`; host must be in `N8N_ALLOWED_HOSTS`). n8n answers at
+`POST /api/drafts/callback?userId=&id=` with header `X-Draft-Token` (a per-round, single-use secret;
+only its sha256 is stored) and the image (binary or `{ url }`) or `{ error }`. The image is counted as
+`kind: 'image'` usage on arrival, so the web flow must not report it to `/api/usage`. "Pedir cambios"
+starts a new round; publishing moves the file into the carousel.
+
+**WhatsApp messages.** Every n8n WhatsApp send node feeds `Firmar consumo`; `armarConsumo`
+(`n8n/consumo.js`) turns the Meta response into `{ kind: 'message' }` and `recordUsage` adds it to
+`whatsappMessages` in the monthly usage hash. The super-admin list shows it per user.
 
 **Whose carousel.** Cookie handlers get the target carousel from `resolveUserId`:
 a user's comes from the session and a different `?userId` is a 403; the super-admin
@@ -206,13 +238,20 @@ api/_mail.js    sendMail (Resend or local outbox) + Spanish templates
 api/_turnstile.js  Cloudflare Turnstile check
 api/whatsapp.js GET | POST | DELETE (cookie) — link the client's WhatsApp number
 api/_n8n-numbers.js  pushNumber → n8n flow "Alta de número"
+api/_plans.js   plan table, validation and planState (pure, no storage)
+api/devices.js  GET | DELETE (cookie) — screens of a carousel
+api/_drafts.js  draft list, rounds and single-use callback secrets
+api/drafts.js   GET | POST | PATCH | DELETE (cookie) — "Crear con IA"; handleDraftCallback for n8n
+api/drafts/callback.js  POST (X-Draft-Token) — Vercel entry of the callback
+terminos.html, privacidad.html  public legal pages (/terminos, /privacidad); yellow `.todo` spans = company data still to fill
 api/qr.js       GET (cookie) — { url, dataUrl }: QR PNG of the public carousel (APP_URL), for the settings panel
 scripts/migrate-storage.mjs  register pre-quota files (never deletes)
 scripts/server.mjs  standalone local/Docker server
 scripts/test-e2e.mjs  end-to-end test (npm test)
 n8n/firma.js, consumo.js, formato.js, prompt.js, comandos.js, respuestas.js  source of the n8n Code-node snippets (signing, usage report, poster size and logo zone, prompt messages, chat command parser and replies); no import/export
 n8n/espera.js  5-second debounce: text messages sent in a row are stored in the n8n table whatsapp_espera and answered once, 5 s after the last one, with all their text joined
-scripts/n8n-patch-flujo.mjs  patches an exported n8n workflow JSON with those snippets
+scripts/n8n-patch-flujo.mjs  patches an exported n8n workflow JSON with those snippets (also: "Hay cupo" stops generation when quota.remaining is 0)
+scripts/n8n-flujo-web.mjs  builds the n8n flow GENERAR_DESDE_WEB from the patched WhatsApp flow (same poster path; webhook in, draft callback out) + SDK code for the MCP
 n8n/clasificador.js  JEV (HTTP call to jevmodel.org/v1/systemone): default questions + parser of its answer (spam / poster with or without logo / command); the API key lives only in n8n
 n8n/prompt.js  default texts of the "Instrucciones del director" node + armarMensajes
 scripts/n8n-lienzo.mjs  canvas layout: 12 sections with sticky notes; refuses to reorder sibling branches

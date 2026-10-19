@@ -17,6 +17,7 @@ import {
   verifyClientSignature, clientSignatureHasher, isHttpUrl, sniffImageType, normalizeUserId, getClientIp,
   saveUserFile, saveImageFromTemp, quotaErrorResponse, recordUsage, getUsageSummary, USAGE_KINDS,
   checkRateLimit, errorResponse, successResponse, getGenerationSettings, getGenerationQuota, normalizeFormat, normalizeResolution, posterSize, isVisibleAt, normalizeSchedule,
+  planBlockedResponse,
 } from './_utils.js';
 import { isLocal, isLocalImages, optimizeImage, uploadTempDir } from './_store.js';
 import { writeCapped, withUploadSlot, cleanupTemp } from './_stream.js';
@@ -75,6 +76,9 @@ async function authorizeClient(request, rawUserId, route) {
   if (!check.ok) {
     return errorResponse(check.error, 401);
   }
+  // Prueba o plan vencido: n8n tampoco puede publicar, subir ni generar.
+  const blocked = await planBlockedResponse(userId);
+  if (blocked) return blocked;
   return { userId, rawBody };
 }
 
@@ -412,6 +416,8 @@ async function handleUploadBinary(request, rawUserId, stream) {
     const check = await hasher.verify();
     if (!check.ok) return errorResponse(check.error, 401);
     if (size === 0) return errorResponse('Imagen vacía', 400);
+    const blocked = await planBlockedResponse(userId);
+    if (blocked) return blocked;
 
     if (!(await userExists(userId))) {
       return errorResponse(`El carrusel ${userId} no existe`, 404);
@@ -517,7 +523,13 @@ export async function handleUpload(request, rawUserId, stream = null) {
     }
   }
 
-  // ---- Modo URL (descarga y re-hospeda) ----
+  return rehostImageUrl(userId, url, alt);
+}
+
+// Descarga una imagen de una URL (hosts de UPLOAD_ALLOWED_HOSTS, redirecciones revisadas)
+// y la guarda en el espacio del usuario. Devuelve la Response de /api/upload: 200 con
+// { url, pathname, contentType, alt, userId } o el error. La usa también /api/drafts/callback.
+export async function rehostImageUrl(userId, url, alt = '') {
   if (!url || typeof url !== 'string' || !isHttpUrl(url)) {
     return errorResponse('Se requiere "data" (base64) o una "url" de imagen válida (http/https)', 400);
   }

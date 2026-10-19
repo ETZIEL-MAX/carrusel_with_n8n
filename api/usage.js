@@ -2,9 +2,17 @@ import {
   requireSession, checkRateLimit, getClientIp, resolveUserId, isSuperAdmin,
   getUsers, getStorageUsage, getUsageSummary, currentMonth, isValidMonth,
   getConfig, updateConfig, imagePriceFrom,
-  getGenerationQuota, globalImageLimit, isValidImageLimit, MAX_MONTHLY_IMAGES,
+  getGenerationQuota, globalImageLimit, isValidImageLimit, MAX_MONTHLY_IMAGES, MAX_STORAGE_MB,
+  getPlanState,
   errorResponse, successResponse,
 } from './_utils.js';
+import { resolvePlans, validatePlansPatch } from './_plans.js';
+
+const configView = (cfg) => ({
+  imagePriceUsd: imagePriceFrom(cfg),
+  monthlyImageLimit: globalImageLimit(cfg),
+  plans: resolvePlans(cfg.plans),
+});
 
 const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_SETTINGS || '30', 10);
 const MAX_IMAGE_PRICE_USD = 100;
@@ -25,8 +33,7 @@ export async function GET(request) {
 
   try {
     if (isSuperAdmin(auth.payload) && !url.searchParams.get('userId')) {
-      const cfg = await getConfig();
-      return successResponse({ imagePriceUsd: imagePriceFrom(cfg), monthlyImageLimit: globalImageLimit(cfg) }, 'Config');
+      return successResponse(configView(await getConfig()), 'Config');
     }
     const userId = resolveUserId(request, auth.payload);
     if (userId instanceof Response) return userId;
@@ -37,7 +44,8 @@ export async function GET(request) {
     const storage = await getStorageUsage(userId, users);
     const usage = await getUsageSummary(userId, month);
     const quota = await getGenerationQuota(userId, users);
-    return successResponse({ userId, storage, usage, quota }, 'Usage');
+    const plan = await getPlanState(userId, users);
+    return successResponse({ userId, storage, usage, quota, plan }, 'Usage');
   } catch (err) {
     console.error('GET /api/usage error:', err);
     return errorResponse('Failed to fetch usage', 500);
@@ -58,8 +66,9 @@ export async function PATCH(request) {
   }
 
   // Body: { imagePriceUsd?, monthlyImageLimit? } (monthlyImageLimit null = sin tope)
-  const { imagePriceUsd, monthlyImageLimit } = body || {};
-  if (imagePriceUsd === undefined && monthlyImageLimit === undefined) {
+  // plans: { basico: { devices, monthlyImageLimit, storageLimitMb, priceMxn, name }, ... }
+  const { imagePriceUsd, monthlyImageLimit, plans } = body || {};
+  if (imagePriceUsd === undefined && monthlyImageLimit === undefined && plans === undefined) {
     return errorResponse('Nothing to update', 400);
   }
   if (imagePriceUsd !== undefined && (typeof imagePriceUsd !== 'number' || !Number.isFinite(imagePriceUsd) || imagePriceUsd < 0 || imagePriceUsd > MAX_IMAGE_PRICE_USD)) {
@@ -69,12 +78,25 @@ export async function PATCH(request) {
     return errorResponse(`monthlyImageLimit debe ser null o un entero entre 0 y ${MAX_MONTHLY_IMAGES}`, 400);
   }
 
+  let cleanPlans;
+  if (plans !== undefined) {
+    const checked = validatePlansPatch(plans, { maxImages: MAX_MONTHLY_IMAGES, maxStorageMb: MAX_STORAGE_MB });
+    if (checked.error) return errorResponse(checked.error, 400);
+    cleanPlans = checked.plans;
+  }
+
   try {
     const patch = {};
     if (imagePriceUsd !== undefined) patch.imagePriceUsd = imagePriceUsd;
     if (monthlyImageLimit !== undefined) patch.monthlyImageLimit = monthlyImageLimit;
+    if (cleanPlans) {
+      // Se guarda la tabla completa: lo que ya había + lo que cambió, campo por campo.
+      const current = resolvePlans((await getConfig()).plans);
+      for (const [id, fields] of Object.entries(cleanPlans)) current[id] = { ...current[id], ...fields };
+      patch.plans = current;
+    }
     const cfg = await updateConfig(patch);
-    return successResponse({ imagePriceUsd: imagePriceFrom(cfg), monthlyImageLimit: globalImageLimit(cfg) }, 'Config updated');
+    return successResponse(configView(cfg), 'Config updated');
   } catch (err) {
     console.error('PATCH /api/usage error:', err);
     return errorResponse('Failed to update config', 500);

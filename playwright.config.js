@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // Local (por defecto): levanta el servidor con datos temporales y prueba todo.
-// Producción (PROD=1): solo pruebas de lectura contra https://carrusel.etziel.com.
+// Producción (PROD=1): solo pruebas de lectura contra PROD_URL (por defecto https://carrusel.etziel.com).
 const PROD = process.env.PROD === '1';
 const PORT = 3210;
 
@@ -33,7 +33,7 @@ export default defineConfig({
         {
           name: 'prod',
           testMatch: /prod\.readonly\.spec\.js/,
-          use: { ...devices['Desktop Chrome'], baseURL: 'https://carrusel.etziel.com', viewport: { width: 1920, height: 1080 } },
+          use: { ...devices['Desktop Chrome'], baseURL: process.env.PROD_URL || 'https://carrusel.etziel.com', viewport: { width: 1920, height: 1080 } },
         },
       ]
     : [

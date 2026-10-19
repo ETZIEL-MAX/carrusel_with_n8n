@@ -85,6 +85,10 @@ async function issueResetLink(base, user) {
   return `${base}/admin.html#restablecer=${token}`;
 }
 
+// Versión de terminos.html y privacidad.html que se acepta al registrarse. Cámbiala cuando
+// cambien esas páginas: queda guardada en cada cuenta como prueba del consentimiento.
+export const TERMS_VERSION = '2026-10-18';
+
 const CHECK_MAIL = 'Si los datos son correctos, te llegará un correo en unos minutos. Revisa también la carpeta de spam.';
 
 async function register(request) {
@@ -96,6 +100,9 @@ async function register(request) {
   if (!name || name.length > 120) return errorResponse('Escribe tu nombre (máximo 120 caracteres)', 400);
   if (!validateEmail(body.email)) return errorResponse('Correo no válido', 400);
   if (!isValidNewPassword(body.password)) return errorResponse(PASSWORD_ERROR, 400);
+  if (body.acceptTerms !== true) {
+    return errorResponse('Para crear la cuenta acepta los Términos y el Aviso de privacidad', 400, { code: 'TERMS_REQUIRED' });
+  }
 
   const gate = await mailGate(request, body);
   if (gate) return gate;
@@ -116,7 +123,7 @@ async function register(request) {
       message = alreadyRegisteredMessage({ name: existing.name || name, link: await issueResetLink(base, existing) });
     } else {
       const token = newToken();
-      await setOnce(signupKey(token), SIGNUP_TTL, JSON.stringify({ name, email, passwordHash }));
+      await setOnce(signupKey(token), SIGNUP_TTL, JSON.stringify({ name, email, passwordHash, terms: { version: TERMS_VERSION, acceptedAt: new Date().toISOString() } }));
       message = verifyEmailMessage({ name, link: `${base}/admin.html#verificar=${token}` });
     }
     await sendMail({ to: email, ...message });

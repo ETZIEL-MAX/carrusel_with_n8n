@@ -31,6 +31,24 @@
   const usageMonth = document.getElementById('usageMonth');
   const usageStats = document.getElementById('usageStats');
   const usageHint = document.getElementById('usageHint');
+  const planAlert = document.getElementById('planAlert');
+  const subText = document.getElementById('subText');
+  const subHint = document.getElementById('subHint');
+  const devText = document.getElementById('devText');
+  const deviceList = document.getElementById('deviceList');
+  const resetDevicesBtn = document.getElementById('resetDevicesBtn');
+  const plansForm = document.getElementById('plansForm');
+  const plansBody = document.getElementById('plansBody');
+  const plansSaveBtn = document.getElementById('plansSaveBtn');
+  const setPlan = document.getElementById('setPlan');
+  const setPlanHint = document.getElementById('setPlanHint');
+  const setPlanEnds = document.getElementById('setPlanEnds');
+  const aiPanel = document.getElementById('aiPanel');
+  const aiForm = document.getElementById('aiForm');
+  const aiPrompt = document.getElementById('aiPrompt');
+  const aiGenerateBtn = document.getElementById('aiGenerateBtn');
+  const aiQuota = document.getElementById('aiQuota');
+  const draftGrid = document.getElementById('draftGrid');
   const addUserBtn = document.getElementById('addUserBtn');
   const superAdminGrid = document.getElementById('superAdminGrid');
   const superAdminEmpty = document.getElementById('superAdminEmpty');
@@ -146,6 +164,8 @@
   let settingsUserId = null;
   let dragId = null;
   let colorSwatches = [];
+  let plansConfig = null; // tabla de planes (super-admin)
+  let planDirty = false;  // el super-admin tocó el plan en el modal
 
   function activeUserId() {
     return currentUserId || session?.userId;
@@ -217,12 +237,92 @@ function escapeHtml(str) {
       const res = await API.getUsage(managingAsSuperAdmin ? id : null, usageMonth.value);
       if (id !== activeUserId()) return; // cambió de carrusel mientras cargaba
       renderPlan(res?.data || {});
+      loadDevices();
     } catch {
       planPanel.hidden = true;
     }
   }
 
-  function renderPlan({ storage, usage, quota }) {
+  // ===== Plan y pantallas =====
+  const PLAN_DATE = { day: 'numeric', month: 'long', year: 'numeric' };
+  function planLabel(plan) {
+    if (!plan || plan.status === 'legacy') return 'Sin plan';
+    const until = plan.endsAt ? new Date(plan.endsAt).toLocaleDateString('es-MX', PLAN_DATE) : null;
+    if (plan.status === 'trial') return `Prueba gratis · ${plan.planName}`;
+    if (plan.status === 'expired') return `${plan.planName} · vencido`;
+    return until ? `${plan.planName} · hasta ${until}` : plan.planName;
+  }
+  function planHint(plan) {
+    if (!plan || plan.status === 'legacy') return 'Cuenta anterior a los planes: sin límite de pantallas.';
+    const left = plan.daysLeft;
+    if (plan.status === 'trial') return `Te ${left === 1 ? 'queda 1 día' : `quedan ${left} días`} de prueba. Para seguir después, contáctanos.`;
+    if (plan.status === 'expired') return 'Tu plan terminó: las pantallas no muestran nada y no se pueden subir ni generar imágenes.';
+    return left !== null && left <= 5 ? `Tu plan vence en ${left} día${left === 1 ? '' : 's'}.` : 'Plan activo.';
+  }
+  function renderSub(plan) {
+    subText.textContent = planLabel(plan);
+    subHint.textContent = planHint(plan);
+    const expired = plan?.status === 'expired';
+    // Vencido: el servidor rechaza subidas (402); los botones se apagan para que se note.
+    [addImgBtn, uploadImgBtn, cameraBtn].forEach((b) => { b.disabled = expired; });
+    planAlert.hidden = !expired;
+    planAlert.textContent = expired
+      ? 'Tu prueba o plan terminó. El carrusel está suspendido en todas las pantallas hasta que se active un plan. Contáctanos para continuar.'
+      : '';
+  }
+
+  async function loadDevices() {
+    const id = activeUserId();
+    if (!id) return;
+    try {
+      const res = await API.getDevices(managingAsSuperAdmin ? id : null);
+      if (id !== activeUserId()) return;
+      const { devices = [], active = 0, limit = null } = res?.data || {};
+      devText.textContent = limit === null ? `${active} (sin límite)` : `${active} de ${limit}`;
+      deviceList.innerHTML = devices.map((d) => `
+        <li class="device-list__item${d.active ? '' : ' is-idle'}">
+          <span><code>${escapeHtml(d.id.slice(0, 8))}</code> · ${escapeHtml(d.active ? 'vista' : 'inactiva desde')} ${escapeHtml(new Date(d.lastSeen).toLocaleString('es-MX'))}</span>
+          <button class="btn btn--small" type="button" data-device="${escapeHtml(d.id)}">Quitar</button>
+        </li>`).join('') || '<li class="hint">Ninguna pantalla ha abierto el carrusel todavía.</li>';
+      resetDevicesBtn.hidden = devices.length === 0;
+    } catch {
+      devText.textContent = '—';
+      deviceList.innerHTML = '';
+      resetDevicesBtn.hidden = true;
+    }
+  }
+
+  resetDevicesBtn.addEventListener('click', async () => {
+    if (!confirm('¿Liberar todas las pantallas? Todas dejan de mostrar el carrusel. En cada TV que quieras seguir usando aparecerá el botón "Conectar como pantalla nueva".')) return;
+    resetDevicesBtn.disabled = true;
+    try {
+      await API.removeAllDevices(managingAsSuperAdmin ? activeUserId() : null);
+      toast('Pantallas liberadas');
+      loadDevices();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      resetDevicesBtn.disabled = false;
+    }
+  });
+
+  deviceList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-device]');
+    if (!btn) return;
+    if (!confirm('¿Quitar esta pantalla? Deja de mostrar el carrusel aunque siga encendida, y su lugar queda libre para otra TV. Si después quieres usarla de nuevo, en esa TV aparece el botón "Conectar como pantalla nueva".')) return;
+    btn.disabled = true;
+    try {
+      await API.removeDevice(managingAsSuperAdmin ? activeUserId() : null, btn.dataset.device);
+      toast('Pantalla liberada');
+      loadDevices();
+    } catch (err) {
+      toast(err.message, 'error');
+      btn.disabled = false;
+    }
+  });
+
+  function renderPlan({ storage, usage, quota, plan }) {
+    renderSub(plan);
     if (!storage || !usage) { planPanel.hidden = true; return; }
     const { pct, cls } = storageLevel(storage.usedBytes, storage.limitBytes);
     storageText.textContent = `${formatBytes(storage.usedBytes)} de ${formatBytes(storage.limitBytes)}`;
@@ -243,6 +343,7 @@ function escapeHtml(str) {
       ['Videos', videos],
       ['Tokens', formatInt(usage.tokensTotal)],
       ['Costo aprox.', formatUsd(usage.estimatedCostUsd)],
+      ['WhatsApp', `${formatInt(usage.whatsappMessages || 0)} msj`],
     ];
     usageStats.innerHTML = stats
       .map(([label, value]) => `<div class="usage-stat"><span class="usage-stat__value">${escapeHtml(value)}</span><span class="usage-stat__label">${escapeHtml(label)}</span></div>`)
@@ -397,6 +498,7 @@ function escapeHtml(str) {
     planPanel.hidden = true;
     usageMonth.value = recentMonths(1)[0];
     loadUserImages();
+    loadDrafts();
   }
 
   // ===== Login tabs =====
@@ -555,6 +657,10 @@ function escapeHtml(str) {
       signupError.textContent = 'Las contraseñas no coinciden';
       return;
     }
+    if (!document.getElementById('signupTerms').checked) {
+      signupError.textContent = 'Para crear la cuenta acepta los Términos y el Aviso de privacidad';
+      return;
+    }
     if (needsCaptcha('signupCaptcha')) {
       signupError.textContent = 'Completa la verificación anti-bots';
       return;
@@ -562,7 +668,7 @@ function escapeHtml(str) {
     signupBtn.disabled = true;
     signupBtn.textContent = 'Creando…';
     try {
-      await API.account.register({ name, email, password, turnstile: captchaToken('signupCaptcha') });
+      await API.account.register({ name, email, password, acceptTerms: true, turnstile: captchaToken('signupCaptcha') });
       signupForm.reset();
       signupForm.hidden = true;
       signupDone.textContent = `Te enviamos un correo a ${email}. Abre el enlace para activar tu cuenta (vale 24 horas). Si no llega en unos minutos, revisa la carpeta de spam.`;
@@ -701,8 +807,73 @@ function escapeHtml(str) {
       const res = await API.getConfig();
       priceInput.value = res?.data?.imagePriceUsd ?? '';
       limitInput.value = res?.data?.monthlyImageLimit ?? '';
+      plansConfig = res?.data?.plans || null;
+      renderPlansTable();
     } catch { /* se queda vacío */ }
   }
+
+  // Tabla de planes (super-admin): pantallas, imágenes, espacio y precio por plan.
+  // [campo, mínimo, máximo, vacío permitido (= sin tope)]
+  const PLAN_FIELDS = [
+    ['devices', 1, 10000, false, 'Pantallas'],
+    ['monthlyImageLimit', 0, 100000, true, 'Imágenes/mes'],
+    ['storageLimitMb', 1, 1048576, true, 'Espacio (MB)'],
+    ['priceMxn', 0, 1000000, true, 'Precio MXN'],
+  ];
+  function renderPlansTable() {
+    if (!plansConfig) { plansBody.innerHTML = ''; return; }
+    plansBody.innerHTML = Object.entries(plansConfig).map(([id, p]) => `
+      <tr data-plan="${escapeHtml(id)}">
+        <th scope="row"><input type="text" data-field="name" value="${escapeHtml(p.name)}" maxlength="40" aria-label="Nombre del plan ${escapeHtml(id)}" /></th>
+        ${PLAN_FIELDS.map(([f, min, max, nullable, label]) => `<td data-label="${escapeHtml(label)}"><input type="number" data-field="${f}" min="${min}" max="${max}" step="1" inputmode="numeric" value="${p[f] ?? ''}" ${nullable ? 'placeholder="Sin tope"' : 'required'} aria-label="${escapeHtml(label)} · ${escapeHtml(p.name)}" /></td>`).join('')}
+      </tr>`).join('');
+  }
+  plansForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const plans = {};
+    for (const row of plansBody.querySelectorAll('tr[data-plan]')) {
+      const id = row.dataset.plan;
+      const entry = { name: row.querySelector('[data-field="name"]').value.trim() };
+      for (const [f, min, max, nullable] of PLAN_FIELDS) {
+        const raw = row.querySelector(`[data-field="${f}"]`).value.trim();
+        if (raw === '' && nullable) { entry[f] = null; continue; }
+        const n = Number(raw);
+        if (raw === '' || !Number.isFinite(n) || n < min || n > max || (f !== 'priceMxn' && !Number.isInteger(n))) {
+          toast(`Revisa el plan ${entry.name || id}: valor inválido`, 'error');
+          return;
+        }
+        entry[f] = n;
+      }
+      plans[id] = entry;
+    }
+    plansSaveBtn.disabled = true;
+    try {
+      const res = await API.updateConfig({ plans });
+      plansConfig = res?.data?.plans || plansConfig;
+      renderPlansTable();
+      toast('Planes guardados');
+      loadSuperAdminUsers();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      plansSaveBtn.disabled = false;
+    }
+  });
+
+  // Plan de un usuario en el modal de ajustes (super-admin).
+  function renderPlanField(user) {
+    planDirty = false;
+    const plans = plansConfig || {};
+    const current = user.plan?.planId || '';
+    setPlan.innerHTML = (current ? '' : '<option value="" selected>Sin plan (cuenta anterior)</option>')
+      + Object.entries(plans).map(([id, p]) => `<option value="${escapeHtml(id)}"${id === current ? ' selected' : ''}>${escapeHtml(p.name)} · ${p.devices} pantallas</option>`).join('');
+    const ends = user.plan?.status === 'active' && user.plan.endsAt ? new Date(user.plan.endsAt) : null;
+    setPlanEnds.value = ends ? `${ends.getFullYear()}-${String(ends.getMonth() + 1).padStart(2, '0')}-${String(ends.getDate()).padStart(2, '0')}` : '';
+    setPlanHint.textContent = `${planLabel(user.plan)}. ${planHint(user.plan)}`;
+  }
+  const markPlanDirty = () => { planDirty = Boolean(setPlan.value); };
+  setPlan.addEventListener('change', markPlanDirty);
+  setPlanEnds.addEventListener('change', markPlanDirty);
 
   // Tope mensual de imágenes (global; cada usuario puede tener el suyo)
   const limitForm = document.getElementById('limitForm');
@@ -793,6 +964,11 @@ function escapeHtml(str) {
           <div class="user-card__storage">
             <div class="meter ${level.cls}"><div class="meter__fill" style="width:${level.pct}%"></div></div>
             <span>${escapeHtml(formatBytes(user.usedBytes))} de ${escapeHtml(formatBytes(user.limitBytes))} · ${user.hasToken ? 'con token' : 'sin token'}${user.whatsappPhone ? ` · WhatsApp ${escapeHtml(formatPhone(user.whatsappPhone))}` : ''}</span>
+          </div>
+          <div class="user-card__plan">
+            <span class="plan-badge plan-badge--${escapeHtml(user.plan?.status || 'legacy')}">${escapeHtml(planLabel(user.plan))}${user.plan?.status === 'trial' ? ` · ${user.plan.daysLeft} d` : ''}</span>
+            <span>Pantallas ${user.devicesActive ?? 0}${user.plan?.devices ? `/${user.plan.devices}` : ''}</span>
+            <span>WhatsApp ${formatInt(user.usage?.whatsappMessages || 0)} msj · ${formatInt(user.usage?.images || 0)} img este mes</span>
           </div>
           <div class="user-card__meta" style="font-size: 0.8rem; color: var(--ink-dim);">
             ${user.createdBy === 'self' ? 'Registro propio · ' : ''}Creado: ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}
@@ -1100,6 +1276,7 @@ function escapeHtml(str) {
       setStorageHint.textContent = user.limitBytes
         ? `Usado: ${formatBytes(user.usedBytes)} de ${formatBytes(user.limitBytes)}. Déjalo vacío para usar el límite por defecto (${user.defaultLimitMb ?? 500} MB).`
         : 'Déjalo vacío para usar el límite por defecto.';
+      renderPlanField(user);
       renderTokenStatus(user);
       const wh = webhookInfo(user.userId, []);
       whUrl.textContent = wh.url;
@@ -1466,8 +1643,11 @@ function escapeHtml(str) {
       settingsFormError.textContent = 'El tope de imágenes debe ser un número entero entre 0 y 100000';
       return;
     }
+    // Fecha de fin: hasta el final de ese día, hora local.
+    const planEndsAt = planDirty && setPlanEnds.value ? new Date(`${setPlanEnds.value}T23:59:59`).toISOString() : null;
     settingsSaveBtn.disabled = true; settingsSaveBtn.textContent = 'Guardando…';
     try {
+      if (planDirty) await API.setUserPlan(userId, setPlan.value, planEndsAt);
       await API.updateUser(userId, { name, email, storageLimitMb, monthlyImageLimit });
       let newPassword = null;
       if (pwd) {
@@ -1488,6 +1668,138 @@ function escapeHtml(str) {
       settingsFormError.textContent = err.message;
     } finally {
       settingsSaveBtn.disabled = false; settingsSaveBtn.textContent = 'Guardar cambios';
+    }
+  });
+
+  // ===== Crear con IA (borradores) =====
+  const DRAFT_POLL_MS = 5000;
+  let draftTimer = null;
+  let drafts = [];
+  const draftOwner = () => (managingAsSuperAdmin ? activeUserId() : null);
+
+  async function loadDrafts() {
+    clearTimeout(draftTimer);
+    const id = activeUserId();
+    if (!id) return;
+    try {
+      const res = await API.getDrafts(draftOwner());
+      if (id !== activeUserId()) return;
+      const data = res?.data || {};
+      aiPanel.hidden = !data.enabled;
+      if (!data.enabled) return;
+      drafts = data.drafts || [];
+      const q = data.quota;
+      aiQuota.textContent = q && q.limit !== null ? `${formatInt(q.used)} de ${formatInt(q.limit)} este mes` : '';
+      renderDrafts();
+      // Mientras alguno se genera, se vuelve a preguntar (solo con la pestaña a la vista).
+      if (drafts.some((d) => d.status === 'generando')) {
+        draftTimer = setTimeout(() => { if (!document.hidden && !userDashboard.hidden) loadDrafts(); }, DRAFT_POLL_MS);
+      }
+    } catch {
+      aiPanel.hidden = true;
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !userDashboard.hidden && drafts.some((d) => d.status === 'generando')) loadDrafts();
+  });
+
+  const DRAFT_STATUS = { generando: 'Generando…', listo: 'Lista para revisar', error: 'No se pudo generar' };
+  function renderDrafts() {
+    draftGrid.innerHTML = drafts.map((d) => {
+      const busy = d.status === 'generando';
+      const media = d.url && !busy
+        ? `<a class="draft-card__media" href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(d.url)}" alt="${escapeHtml(d.prompt)}" loading="lazy" /></a>`
+        : `<div class="draft-card__media draft-card__media--empty">${busy ? '<span class="spinner" aria-hidden="true"></span>' : ''}<span>${escapeHtml(DRAFT_STATUS[d.status] || '')}</span></div>`;
+      const changes = d.changes.length
+        ? `<ol class="draft-card__changes">${d.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ol>`
+        : '';
+      return `
+      <article class="draft-card" data-draft="${escapeHtml(d.id)}">
+        ${media}
+        <div class="draft-card__body">
+          <p class="draft-card__status draft-card__status--${escapeHtml(d.status)}">${escapeHtml(DRAFT_STATUS[d.status] || d.status)}${d.round > 1 ? ` · ronda ${d.round}` : ''}</p>
+          <p class="draft-card__prompt">${escapeHtml(d.prompt)}</p>
+          ${changes}
+          ${d.error ? `<p class="error-text">${escapeHtml(d.error)}</p>` : ''}
+          <form class="draft-card__change" data-change="${escapeHtml(d.id)}" hidden>
+            <div class="field"><label for="chg-${escapeHtml(d.id)}">¿Qué le cambio?</label>
+            <textarea id="chg-${escapeHtml(d.id)}" maxlength="500" rows="2" placeholder="Ej.: el precio más grande y fondo rojo"></textarea></div>
+            <button class="btn btn--primary btn--small" type="submit">Enviar cambios</button>
+          </form>
+          <div class="draft-card__actions">
+            <button class="btn btn--primary btn--small" type="button" data-draft-action="publicar" ${d.url && !busy ? '' : 'disabled'}>Publicar</button>
+            <button class="btn btn--small" type="button" data-draft-action="cambios" ${busy ? 'disabled' : ''}>Pedir cambios</button>
+            <button class="btn btn--danger btn--small" type="button" data-draft-action="descartar">Descartar</button>
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  aiForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const prompt = aiPrompt.value.trim();
+    if (!prompt) { toast('Escribe qué imagen quieres', 'error'); aiPrompt.focus(); return; }
+    aiGenerateBtn.disabled = true;
+    try {
+      await API.createDraft(draftOwner(), prompt);
+      aiPrompt.value = '';
+      toast('Generando tu imagen…');
+      await loadDrafts();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      aiGenerateBtn.disabled = false;
+    }
+  });
+
+  draftGrid.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-draft-action]');
+    if (!btn) return;
+    const card = btn.closest('[data-draft]');
+    const id = card.dataset.draft;
+    const action = btn.dataset.draftAction;
+    if (action === 'cambios') {
+      const form = card.querySelector('form[data-change]');
+      form.hidden = !form.hidden;
+      if (!form.hidden) form.querySelector('textarea').focus();
+      return;
+    }
+    if (action === 'descartar' && !confirm('¿Descartar este borrador? La imagen se borra.')) return;
+    btn.disabled = true;
+    try {
+      if (action === 'publicar') {
+        await API.publishDraft(draftOwner(), id);
+        toast('Publicada en el carrusel');
+        loadUserImages();
+        loadPlan();
+      } else {
+        await API.discardDraft(draftOwner(), id);
+        toast('Borrador descartado');
+        loadPlan();
+      }
+      await loadDrafts();
+    } catch (err) {
+      toast(err.message, 'error');
+      btn.disabled = false;
+    }
+  });
+
+  draftGrid.addEventListener('submit', async (e) => {
+    const form = e.target.closest('form[data-change]');
+    if (!form) return;
+    e.preventDefault();
+    const cambios = form.querySelector('textarea').value.trim();
+    if (!cambios) { toast('Escribe qué quieres cambiar', 'error'); return; }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      await API.changeDraft(draftOwner(), form.dataset.change, cambios);
+      toast('Pidiendo los cambios…');
+      await loadDrafts();
+    } catch (err) {
+      toast(err.message, 'error');
+      submit.disabled = false;
     }
   });
 

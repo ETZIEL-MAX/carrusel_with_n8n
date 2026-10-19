@@ -133,11 +133,24 @@ Le manda el póster al cliente y espera: «PUBLICAR» o lo que quiera cambiar.
 ### 11 · Publicar o corregir
 `Es publicar` → sí: `Publicar en carrusel` · no: `Preparar revision` → vuelve a la sección 7 (hasta 5 intentos)
 
+### Cupo del mes
+`Es ayuda` (no) → `Hay cupo` → `Init contexto`
+
+Antes de generar un póster se mira `quota` de los ajustes del panel (`Traer settings`). Si ya no
+quedan imágenes del mes (las del plan del cliente o el tope que pusiste en el panel), `Sin cupo`
+le avisa por WhatsApp y no se genera nada. Los límites se cambian en el panel del super-admin
+(tabla **Planes** o el tope propio de cada cuenta), no en n8n.
+
 ### 12 · Consumo
 `Firmar consumo` → `Reportar consumo`
 
 Avisa al panel cuántos tokens e imágenes se gastaron (JEV, audio, prompt e imagen). **Esta sección tiene que quedar arriba de
 todas las demás** (ver el punto 6).
+
+También cuenta los mensajes que el bot manda: cada nodo de WhatsApp que envía (`send` o
+`sendAndWait`) tiene una salida extra a `Firmar consumo`, que lo reporta como `kind: "message"`.
+El super-admin ve el total del mes en la tarjeta de cada cliente. Si agregas un nodo de envío nuevo,
+vuelve a aplicar el script y queda conectado solo.
 
 ---
 
@@ -345,3 +358,58 @@ corre primero el que está **más arriba** en el lienzo. Por eso:
 Si mueves un nodo por debajo de su «hermano», cambia el orden en que corren. El script
 (`ordenarLienzo`) lo comprueba y se niega a acomodar si ese orden cambiaría, y al volver a
 aplicarlo cada nodo regresa a su lugar.
+
+
+## 7. Flujo «Generar desde web» (Crear con IA del panel)
+
+En n8n se llama **GENERAR_DESDE_WEB** (id `LbKLR9xqboXezBHg`). No se edita a mano: lo arma
+`scripts/n8n-flujo-web.mjs` copiando la ruta del póster del flujo de WhatsApp ya parchado
+(director, prompt, Qwen/Wan, logo), así los dos generan igual. Si cambias el póster en el flujo de
+WhatsApp, vuelve a generar este:
+
+```bash
+node scripts/n8n-patch-flujo.mjs n8n/.work/copia.live.json n8n/.work/copia.patched.json
+node scripts/n8n-flujo-web.mjs n8n/.work/copia.patched.json n8n/.work/web.json n8n/.work/web.sdk.js
+```
+
+`web.sdk.js` es el código que acepta el MCP de n8n (`create_workflow_from_code`).
+
+Para que funcione: publicar el flujo en n8n y, en `.env.prod` del servidor,
+`N8N_WEB_GENERATION_URL=https://n8ndokployupdates.etziel.com/webhook/generar-web-carrusel` y
+`n8ndokployupdates.etziel.com` en `N8N_ALLOWED_HOSTS`. El webhook usa la credencial «Alta de Numero»
+(mismo `X-Carrusel-Key` que el alta de números). Solo acepta `callbackUrl` de
+`https://carrusel.etziel.com/api/drafts/callback`.
+
+Es un flujo aparte del de WhatsApp. El cliente escribe en el panel qué imagen quiere; el servidor
+llama a este flujo y la imagen vuelve al panel como **borrador** (el cliente la revisa, pide
+cambios o la publica).
+
+**Entrada.** Webhook `POST` con *Header Auth* (header `X-Carrusel-Key`, valor =
+`N8N_NUMBERS_SECRET`). Su URL de producción va en `N8N_WEB_GENERATION_URL` del servidor y su host
+en `N8N_ALLOWED_HOSTS`. Cuerpo:
+
+```json
+{
+  "userId": "USER7", "draftId": "<uuid>", "round": 1,
+  "prompt": "Tacos al pastor 3x50 solo hoy",
+  "changes": [],
+  "previousImageUrl": null,
+  "format": "horizontal", "width": 1920, "height": 1080,
+  "googleDriveFolder": null, "colorPalette": ["#ff0000"],
+  "callbackUrl": "https://carrusel.etziel.com/api/drafts/callback?userId=USER7&id=<uuid>",
+  "callbackToken": "<secreto de esta ronda>"
+}
+```
+
+En la ronda 2 en adelante `changes` trae lo que pidió el cliente (en orden) y
+`previousImageUrl` la imagen anterior.
+
+**Pasos.** Responder 200 enseguida (el panel no espera), redactar el prompt con
+«Instrucciones del director» (`n8n/prompt.js`, usando `prompt` + `changes`), generar con
+Qwen/Wan al tamaño `width` × `height` y poner el logo como en el flujo de WhatsApp.
+
+**Salida.** `POST` a `callbackUrl` con el header `X-Draft-Token: <callbackToken>` y, como cuerpo,
+la imagen (`Content-Type: image/png` o `image/jpeg`) o `{ "url": "<URL temporal>" }`. Si algo falla,
+`{ "error": "texto para el cliente" }`. El secreto sirve una sola vez y vence a los 15 minutos.
+
+**No** reportes la imagen a `/api/usage`: el servidor la cuenta al recibirla.
